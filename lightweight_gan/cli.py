@@ -62,7 +62,7 @@ def run_training(rank, world_size, model_args, data, load_from, new, num_train_s
 
     model.set_data_src(data)
 
-    progress_bar = tqdm(initial = model.steps, total = num_train_steps, mininterval=10., desc=f'{name}<{data}>')
+    progress_bar = tqdm(initial = model.steps, total = num_train_steps, mininterval=10., desc=f'{name}<{data}>', dynamic_ncols=True)
     while model.steps < num_train_steps:
         retry_call(model.train, tries=3, exceptions=NanException)
         progress_bar.n = model.steps
@@ -113,6 +113,7 @@ def train_from_folder(
     calculate_fid_every = None,
     calculate_fid_num_images = 12800,
     clear_fid_cache = False,
+    fid_cache = None,
     seed = 42,
     amp = False,
     show_progress = False,
@@ -146,6 +147,7 @@ def train_from_folder(
         calculate_fid_every = calculate_fid_every,
         calculate_fid_num_images = calculate_fid_num_images,
         clear_fid_cache = clear_fid_cache,
+        fid_cache = fid_cache,
         amp = amp
     )
 
@@ -188,3 +190,8 @@ def train_from_folder(
 
 def main():
     fire.Fire(train_from_folder)
+
+
+
+if __name__ == '__main__':
+    main()

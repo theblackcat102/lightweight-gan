@@ -26,6 +26,7 @@ from kornia import filter2d
 
 from lightweight_gan.diff_augment import DiffAugment
 from lightweight_gan.version import __version__
+from pytorch_gan_metrics import get_inception_score_and_fid
 
 from tqdm import tqdm
 from einops import rearrange, reduce, repeat
@@ -872,6 +873,7 @@ class Trainer():
         world_size = 1,
         log = False,
         amp = False,
+        fid_cache=None,
         *args,
         **kwargs
     ):
@@ -941,6 +943,7 @@ class Trainer():
         self.calculate_fid_every = calculate_fid_every
         self.calculate_fid_num_images = calculate_fid_num_images
         self.clear_fid_cache = clear_fid_cache
+        self.fid_cache = fid_cache
 
         self.is_ddp = is_ddp
         self.is_main = rank == 0
@@ -1213,15 +1216,40 @@ class Trainer():
             if self.steps % self.evaluate_every == 0 or (self.steps % 100 == 0 and self.steps < 20000):
                 self.evaluate(floor(self.steps / self.evaluate_every), num_image_tiles = self.num_image_tiles)
 
-            if exists(self.calculate_fid_every) and self.steps % self.calculate_fid_every == 0 and self.steps != 0:
-                num_batches = math.ceil(self.calculate_fid_num_images / self.batch_size)
-                fid = self.calculate_fid(num_batches)
+            if exists(self.calculate_fid_every) and self.steps % self.calculate_fid_every == 0 and self.steps != 0 and self.fid_cache:
+                inception, fid = self.evaluate_score(self.calculate_fid_num_images, self.batch_size, self.fid_cache)
                 self.last_fid = fid
 
                 with open(str(self.results_dir / self.name / f'fid_scores.txt'), 'a') as f:
                     f.write(f'{self.steps},{fid}\n')
+                with open(str(self.results_dir / self.name / f'is_scores.txt'), 'a') as f:
+                    f.write(f'{self.steps},{inception[0]},{inception[1]}\n')
 
         self.steps += 1
+
+    
+    @torch.no_grad()
+    def evaluate_score(self, num=50000, num_batch=64, fid_cache=None):
+        self.GAN.eval()
+
+        ext = self.image_extension
+        
+        latent_dim = self.GAN.latent_dim
+
+        imgs = []
+        for start in tqdm(range(0, num, num_batch), desc='Evaluating', ncols=0, leave=False, dynamic_ncols=True):
+            batch_size = min(start + num_batch, num) - start
+
+            latents = torch.randn((batch_size, latent_dim)).cuda(self.rank)
+
+            imgs.append(self.GAN.GE(latents).clamp_(0., 1.).cpu())
+
+        imgs = torch.cat(imgs, dim=0)
+        imgs = (imgs + 1) / 2
+        IS, FID = get_inception_score_and_fid(
+                                imgs, fid_cache, verbose=True)
+        return IS, FID
+
 
     @torch.no_grad()
     def evaluate(self, num = 0, num_image_tiles = 4):
