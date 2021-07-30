@@ -9,6 +9,7 @@ from lightweight_gan import Trainer, NanException
 from lightweight_gan.diff_augment_test import DiffAugmentTest
 
 import torch
+torch.backends.cudnn.benchmark = True
 import torch.multiprocessing as mp
 import torch.distributed as dist
 
@@ -190,8 +191,3 @@ def train_from_folder(
 
 def main():
     fire.Fire(train_from_folder)
-
-
-
-if __name__ == '__main__':
-    main()
