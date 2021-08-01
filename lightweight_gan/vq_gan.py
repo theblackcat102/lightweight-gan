@@ -83,6 +83,7 @@ class LightweightVQGAN(nn.Module):
         ttur_mult = 2.,
         perceptual_weight=1.0, # adaptive weight
         disc_weight=1.0,# adaptive weight
+        discriminator_iter_start=25001,
         lr = 2e-4,
         rank = 0
     ):
@@ -118,7 +119,7 @@ class LightweightVQGAN(nn.Module):
             self.perceptual_loss = LPIPS().eval()
         self.perceptual_weight = perceptual_weight
         self.disc_weight = disc_weight
-        self.discriminator_iter_start = 250001
+        self.discriminator_iter_start = discriminator_iter_start
 
         self.ema_updater = EMA(0.995)
         self.GE = VAE(**G_kwargs)
@@ -140,7 +141,7 @@ class LightweightVQGAN(nn.Module):
         self.D_aug = AugWrapper(self.D, image_size)
     
     def get_last_layer(self):
-        return self.G.decoder.out_conv.weight
+        return self.G.decoder.out_conv.weight if isinstance(self.G, nn.DataParallel) else self.G.module.decoder.out_conv.weight
 
     def calculate_adaptive_weight(self, nll_loss, g_loss, last_layer=None):
         if last_layer is not None:

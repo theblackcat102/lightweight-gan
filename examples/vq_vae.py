@@ -1,11 +1,13 @@
+import torch
+torch.backends.cudnn.benchmark = True
+from torch import nn
+
 from PIL.Image import Image
 from torch.utils import data
 from tqdm import tqdm
 from datetime import datetime
 from functools import wraps
 import numpy as np
-import torch
-torch.backends.cudnn.benchmark = True
 import random
 import os, math
 import torchvision
@@ -68,7 +70,7 @@ flags.DEFINE_boolean('greyscale', False, 'grayscale?')
 flags.DEFINE_boolean('amp', False, 'use amp')
 
 flags.DEFINE_string('optimizer', 'adam', 'optimizer')
-
+flags.DEFINE_integer('num_gpus', 1, 'number of GPUs')
 flags.DEFINE_integer('sample_every_steps', 1000, 'number of steps to sample image')
 flags.DEFINE_integer('checkpoint_every_steps', 2000, 'number of checkpoints')
 flags.DEFINE_string('checkpoint', None, 'start from checkpoint')
@@ -157,7 +159,6 @@ def step_gen(step, VQGAN, image_batch, amp_context, L_scaler, device='cuda', rec
 
         with amp_context():
             generated_images, _, latent_loss, _ = G(image_batch)
-
             loss = recon_loss_fn(generated_images, image_batch )
             if FLAGS.perceptual_weight > 0:
                 p_loss = VQGAN.perceptual_loss(image_batch.contiguous(), generated_images.contiguous()).mean()
@@ -167,9 +168,8 @@ def step_gen(step, VQGAN, image_batch, amp_context, L_scaler, device='cuda', rec
           
 
             gen_loss = loss * FLAGS.recon_weight \
-                + latent_loss
-
-            if not recon_only and step < FLAGS.discriminator_iter_start:
+                + latent_loss.mean()
+            if not recon_only and step > FLAGS.discriminator_iter_start:
                 fake_output, fake_output_32x32, _ = D_aug(generated_images, **aug_kwargs)
                 real_output, real_output_32x32, _ = D_aug(image_batch, **aug_kwargs) if G_requires_calc_real else (None, None, None)
 
@@ -181,7 +181,6 @@ def step_gen(step, VQGAN, image_batch, amp_context, L_scaler, device='cuda', rec
                 loss_32x32 = G_loss_fn(fake_output_32x32, real_output_32x32)
 
                 gen_loss += (g_loss + loss_32x32 ) * d_weight * disc_factor
-
             gen_loss = gen_loss / FLAGS.gradient_accumulate_every
 
         gen_loss.register_hook(raise_if_nan)
@@ -206,7 +205,7 @@ def store_sample(loader, save_filename):
     pil_image.save(save_filename)
 
 def train(argv):
-    dataset = ImageDataset('/mnt/ssd0/ffhq-dataset/images1024x1024/', FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob)
+    dataset = ImageDataset(FLAGS.data, FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob)
     dataloader = DataLoader(dataset, 
         num_workers = FLAGS.num_workers, 
         batch_size = FLAGS.batch_size, 
@@ -235,32 +234,43 @@ def train(argv):
 
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
-        VQGAN.load_state_dict(state_dict['state'])
+        VQGAN.G.load_state_dict(state_dict['G'])
+        VQGAN.D.load_state_dict(state_dict['D'])
+        VQGAN.D_opt.load_state_dict(state_dict['D_opt'])
+        VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
+
         G_scaler.load_state_dict(state_dict['G_scaler'])
         D_scaler.load_state_dict(state_dict['D_scaler'])
 
+    if FLAGS.num_gpus > 1:
+        VQGAN.G = nn.DataParallel(VQGAN.G)
+        VQGAN.D = nn.DataParallel(VQGAN.D)
+
+
     temp = FLAGS.init_temp
     store_sample(loader, 'results/{}/{}.jpg'.format(FLAGS.name, 'samples'))
-    VQGAN.D_opt.zero_grad()
+    D_opt = VQGAN.D_opt 
+    G_opt = VQGAN.G_opt
+
     recon_only = FLAGS.recon_only
 
     for step in range(100000):
 
-        if VQGAN.discriminator_iter_start > step:
+        if step > FLAGS.discriminator_iter_start:
             recon_only = False
 
         if not recon_only:
             image_batch = next(loader).cuda()
             image_batch.requires_grad_()
-            VQGAN.D_opt.zero_grad()
+            D_opt.zero_grad()
             dis_loss = step_dis(step, VQGAN, image_batch, amp_context, D_scaler )
-            D_scaler.step(VQGAN.D_opt)
+            D_scaler.step(D_opt)
             D_scaler.update()
 
         image_batch = next(loader).cuda()
         image_batch.requires_grad_()
 
-        VQGAN.G_opt.zero_grad()
+        G_opt.zero_grad()
 
         if step % FLAGS.update_temp == 0:
             temp = np.maximum(FLAGS.init_temp * np.exp(-FLAGS.anneal_rate * step), FLAGS.min_temp)
@@ -271,7 +281,7 @@ def train(argv):
         else:
             print(step, gen_loss.item(), dis_loss.item(), temp)
 
-        G_scaler.step(VQGAN.G_opt)
+        G_scaler.step(G_opt)
         G_scaler.update()
 
         if step % 10 == 0 and step > 20000:
@@ -293,9 +303,12 @@ def train(argv):
             pil_image = transforms.ToPILImage()(images_grid.cpu())
             pil_image.save('results/{}/{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
 
-        if step % FLAGS.checkpoint_every_steps == 0 and step > 0:
+        if step % FLAGS.checkpoint_every_steps == 0:
             checkpoint = {
-                'state': VQGAN.state_dict(),
+                'G': VQGAN.G.state_dict() if FLAGS.num_gpus == 1 else VQGAN.G.module.state_dict(),
+                'D': VQGAN.D.state_dict() if FLAGS.num_gpus == 1 else VQGAN.D.module.state_dict(),
+                'D_opt': VQGAN.D_opt.state_dict(),
+                'G_opt': VQGAN.G_opt.state_dict(),
                 'G_scaler': G_scaler.state_dict(),
                 'D_scaler': D_scaler.state_dict()
             }

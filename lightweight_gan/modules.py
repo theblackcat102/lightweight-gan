@@ -306,10 +306,14 @@ class Encoder(nn.Module):
         attn_res_layers = []
     ):
         super().__init__()
+        # print(image_size // 8, image_size, image_size // 16 )
+        # offset = 8 - log2(image_size // 8)
+        # print(offset)
+
         resolution = log2(image_size)
         assert is_power_of_two(image_size), 'image size must be a power of 2'
 
-        resolution = int(resolution)
+        resolution = int(resolution) 
 
         if transparent:
             init_channel = 4
@@ -318,7 +322,7 @@ class Encoder(nn.Module):
         else:
             init_channel = 3
 
-        num_non_residual_layers = max(0, int(resolution) - 10)
+        num_non_residual_layers = max(0, int(resolution) - 6)
 
         non_residual_resolutions = range(min(8, resolution), 2, -1)
         features = list(map(lambda n: (n,  2 ** (fmap_inverse_coef - n)), non_residual_resolutions))
@@ -338,14 +342,14 @@ class Encoder(nn.Module):
 
             self.non_residual_layers.append(nn.Sequential(
                 Blur(),
-                nn.Conv2d(init_channel, chan_out, 4, stride = 2, padding = 1),
+                nn.Conv2d(init_channel, chan_out, 3, stride = 1, padding = 1),
                 nn.LeakyReLU(0.1)
             ))
 
         self.residual_layers = nn.ModuleList([])
 
         for (res, ((_, chan_in), (_, chan_out))) in zip(non_residual_resolutions, chan_in_out):
-            image_width = 2 ** res
+            image_width = 2 ** (res-1)
 
             attn = None
             if image_width in attn_res_layers:
@@ -369,6 +373,7 @@ class Encoder(nn.Module):
                 ]),
                 attn
             ]))
+
             if image_width == downsample:
                 break
         # last_chan = features[-1][-1]
@@ -379,7 +384,7 @@ class Encoder(nn.Module):
 
         for layer in self.non_residual_layers:
             x = layer(x)
-            print('non',x.shape)
+
         layer_outputs = []
 
         for (net, attn) in self.residual_layers:
@@ -405,7 +410,7 @@ class Decoder(nn.Module):
     ):
         super().__init__()
         # image_size : input_size ratio must be 16 : 1
-        resolution = log2( image_size // input_size )
+        resolution = log2( (image_size // input_size) )
         assert is_power_of_two(image_size), 'image size must be a power of 2'
 
         if transparent:
@@ -511,10 +516,10 @@ if __name__ == "__main__":
     enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
     x = torch.randn((2, 3, image_size, image_size))
     latents = enc(x)
-    print(latents.shape)
+    print('latents',latents.shape)
     gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[32], freq_chan_attn=False)
-    latent = torch.randn(2, 128, input_size, input_size)
+    # latents = torch.randn(2, 768, input_size, input_size)
     print(gen(latents).shape)
-    print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)
+    # print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)
     print(sum(p.numel() for p in gen.parameters() if p.requires_grad)/1e6)
     print()
