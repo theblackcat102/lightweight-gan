@@ -56,6 +56,8 @@ flags.DEFINE_float('recon_weight', 1, 'vae reconstruct probability')
 flags.DEFINE_float('init_temp', 1.0, 'initial anneal temperature')
 flags.DEFINE_float('anneal_rate', 0.00005, 'initial anneal temperature')
 flags.DEFINE_float('min_temp', 0.5, 'minimum anneal temperature')
+flags.DEFINE_integer('update_temp', 100, 'when to update temperature')
+
 flags.DEFINE_float('perceptual_weight', 1.0, 'minimum anneal temperature')
 
 flags.DEFINE_boolean('transparent', False, 'transparent?')
@@ -66,6 +68,11 @@ flags.DEFINE_boolean('greyscale', False, 'grayscale?')
 flags.DEFINE_boolean('amp', False, 'use amp')
 
 flags.DEFINE_string('optimizer', 'adam', 'optimizer')
+
+flags.DEFINE_integer('sample_every_steps', 1000, 'number of steps to sample image')
+flags.DEFINE_integer('checkpoint_every_steps', 2000, 'number of checkpoints')
+flags.DEFINE_string('checkpoint', None, 'start from checkpoint')
+
 
 flags.DEFINE_integer('num_workers', 10, 'number of worker')
 
@@ -213,20 +220,36 @@ def train(argv):
         downsample_size=FLAGS.downsample,
         attn_res_layers=FLAGS.attn_res_layers,
         freq_chan_attn=FLAGS.freq_chan_attn,
+        perceptual_weight=FLAGS.perceptual_weight,
+        enc_attn_res_layers=FLAGS.enc_attn_res_layers,
+        dec_attn_res_layers=FLAGS.dec_attn_res_layers,
         ttur_mult = FLAGS.ttur_mult,
-        lr=FLAGS.learning_rate
+        lr=FLAGS.learning_rate,
+        discriminator_iter_start=25001,
     )
 
     amp = FLAGS.amp
     amp_context = autocast if amp else null_context
     G_scaler = GradScaler(enabled = amp)
     D_scaler = GradScaler(enabled = amp)
+
+    if FLAGS.checkpoint is not None:
+        state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
+        VQGAN.load_state_dict(state_dict['state'])
+        G_scaler.load_state_dict(state_dict['G_scaler'])
+        D_scaler.load_state_dict(state_dict['D_scaler'])
+
     temp = FLAGS.init_temp
     store_sample(loader, 'results/{}/{}.jpg'.format(FLAGS.name, 'samples'))
     VQGAN.D_opt.zero_grad()
+    recon_only = FLAGS.recon_only
+
     for step in range(100000):
 
-        if not FLAGS.recon_only:
+        if VQGAN.discriminator_iter_start > step:
+            recon_only = False
+
+        if not recon_only:
             image_batch = next(loader).cuda()
             image_batch.requires_grad_()
             VQGAN.D_opt.zero_grad()
@@ -239,11 +262,11 @@ def train(argv):
 
         VQGAN.G_opt.zero_grad()
 
-        if step % 100 == 0:
+        if step % FLAGS.update_temp == 0:
             temp = np.maximum(FLAGS.init_temp * np.exp(-FLAGS.anneal_rate * step), FLAGS.min_temp)
-        gen_loss = step_gen(step, VQGAN, image_batch, amp_context, G_scaler, recon_only=FLAGS.recon_only, temp=temp)
+        gen_loss = step_gen(step, VQGAN, image_batch, amp_context, G_scaler, recon_only=recon_only, temp=temp)
 
-        if FLAGS.recon_only:
+        if recon_only:
             print(step, gen_loss.item(), temp)
         else:
             print(step, gen_loss.item(), dis_loss.item(), temp)
@@ -254,7 +277,7 @@ def train(argv):
         if step % 10 == 0 and step > 20000:
             VQGAN.EMA()
 
-        if step % 500 == 0:
+        if step % FLAGS.sample_every_steps == 0:
             generated_images = []
             total = 0
             num_rows = 8
@@ -268,7 +291,15 @@ def train(argv):
             generated_images = torch.cat(generated_images)
             images_grid = torchvision.utils.make_grid(generated_images[:int(num_rows**2)], nrow = num_rows)
             pil_image = transforms.ToPILImage()(images_grid.cpu())
-            pil_image.save('results/{}/{}.jpg'.format(FLAGS.name, step//500))
+            pil_image.save('results/{}/{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
+
+        if step % FLAGS.checkpoint_every_steps == 0 and step > 0:
+            checkpoint = {
+                'state': VQGAN.state_dict(),
+                'G_scaler': G_scaler.state_dict(),
+                'D_scaler': D_scaler.state_dict()
+            }
+            torch.save(checkpoint, 'results/{}/model-{}.pt'.format( FLAGS.name, step ))
 
 
 if __name__ == '__main__':

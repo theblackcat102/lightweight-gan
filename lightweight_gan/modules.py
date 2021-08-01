@@ -512,7 +512,7 @@ if __name__ == "__main__":
     x = torch.randn((2, 3, image_size, image_size))
     latents = enc(x)
     print(latents.shape)
-    gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[64] )
+    gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[32], freq_chan_attn=False)
     latent = torch.randn(2, 128, input_size, input_size)
     print(gen(latents).shape)
     print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)

@@ -77,6 +77,8 @@ class LightweightVQGAN(nn.Module):
         greyscale = False,
         disc_output_size = 5,
         attn_res_layers = [],
+        dec_attn_res_layers=[],
+        enc_attn_res_layers=[],
         freq_chan_attn = False,
         ttur_mult = 2.,
         perceptual_weight=1.0, # adaptive weight
@@ -96,8 +98,8 @@ class LightweightVQGAN(nn.Module):
             fmap_inverse_coef = fmap_inverse_coef,
             transparent = transparent,
             greyscale = greyscale,
-            enc_attn_res_layers = attn_res_layers,
-            dec_attn_res_layers = attn_res_layers,
+            enc_attn_res_layers = enc_attn_res_layers,
+            dec_attn_res_layers = dec_attn_res_layers,
             freq_chan_attn = freq_chan_attn
         )
 
@@ -112,7 +114,8 @@ class LightweightVQGAN(nn.Module):
             attn_res_layers = attn_res_layers,
             disc_output_size = disc_output_size
         )
-        self.perceptual_loss = LPIPS().eval()
+        if perceptual_weight > 0:
+            self.perceptual_loss = LPIPS().eval()
         self.perceptual_weight = perceptual_weight
         self.disc_weight = disc_weight
         self.discriminator_iter_start = 250001
@@ -176,17 +179,21 @@ class LightweightVQGAN(nn.Module):
 
 
 if __name__ == '__main__':
-    input_size = 8
-    image_size = 128
-    gen = VAE(512, image_size=image_size, downsample_size=input_size)
+    input_size = 32
+    image_size = 512
+    gen = LightweightVQGAN(512, image_size=image_size, 
+        downsample_size=input_size, 
+        dec_attn_res_layers=[16, 32], 
+        freq_chan_attn=True, 
+        perceptual_weight=-1)
+    print(gen.state_dict().keys())
+    print('VAE',sum(p.numel() for p in gen.parameters() )/1e6)
+    D = gen.D
+    print('D',sum(p.numel() for p in D.parameters() )/1e6)
+
     img = torch.randn(2, 3, image_size, image_size)
-    fake_img = gen(img)[0]
+    fake_img = gen.G(img)[0]
     print(fake_img.shape)
 
-    D = Discriminator(
-            image_size = image_size,
-            fmap_max = 15,
-            disc_output_size = 5
-        )
     out, out_32x32, aux_loss = D(fake_img)
     print(out.shape)
