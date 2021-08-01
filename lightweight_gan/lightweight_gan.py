@@ -131,19 +131,6 @@ def dual_contrastive_loss(real_logits, fake_logits):
 
     return loss_half(real_logits, fake_logits) + loss_half(-fake_logits, -real_logits)
 
-# helper classes
-
-class NanException(Exception):
-    pass
-
-class EMA():
-    def __init__(self, beta):
-        super().__init__()
-        self.beta = beta
-    def update_average(self, old, new):
-        if not exists(old):
-            return new
-        return old * self.beta + (1 - self.beta) * new
 
 class RandomApply(nn.Module):
     def __init__(self, prob, fn, fn_else = lambda x: x):

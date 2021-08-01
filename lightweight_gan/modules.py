@@ -133,6 +133,19 @@ class FCANet(nn.Module):
         x = reduce(x * self.dct_weights, 'b c (h h1) (w w1) -> b c h1 w1', 'sum', h1 = 1, w1 = 1)
         return self.net(x)
 
+# helper classes
+
+class NanException(Exception):
+    pass
+
+class EMA():
+    def __init__(self, beta):
+        super().__init__()
+        self.beta = beta
+    def update_average(self, old, new):
+        if not exists(old):
+            return new
+        return old * self.beta + (1 - self.beta) * new
 
 # squeeze excitation classes
 
@@ -285,17 +298,16 @@ class Encoder(nn.Module):
         self,
         image_size,
         downsample,
+        n_hid=768,
         fmap_max = 512,
         fmap_inverse_coef = 12,
         transparent = False,
         greyscale = False,
-        disc_output_size = 5,
         attn_res_layers = []
     ):
         super().__init__()
         resolution = log2(image_size)
         assert is_power_of_two(image_size), 'image size must be a power of 2'
-        assert disc_output_size in {1, 5}, 'discriminator output dimensions can only be 5x5 or 1x1'
 
         resolution = int(resolution)
 
@@ -334,8 +346,6 @@ class Encoder(nn.Module):
 
         for (res, ((_, chan_in), (_, chan_out))) in zip(non_residual_resolutions, chan_in_out):
             image_width = 2 ** res
-            if image_width == downsample:
-                break
 
             attn = None
             if image_width in attn_res_layers:
@@ -359,8 +369,10 @@ class Encoder(nn.Module):
                 ]),
                 attn
             ]))
-
-        last_chan = features[-1][-1]
+            if image_width == downsample:
+                break
+        # last_chan = features[-1][-1]
+        self.output = nn.Conv2d(chan_out, n_hid, 1)
 
     def forward(self, x, calc_aux_loss = False):
         orig_img = x
@@ -376,7 +388,7 @@ class Encoder(nn.Module):
 
             x = net(x)
 
-        return x
+        return self.output(x)
 
 class Decoder(nn.Module):
     def __init__(
@@ -392,6 +404,7 @@ class Decoder(nn.Module):
         freq_chan_attn = False
     ):
         super().__init__()
+        # image_size : input_size ratio must be 16 : 1
         resolution = log2( image_size // input_size )
         assert is_power_of_two(image_size), 'image size must be a power of 2'
 
@@ -492,12 +505,16 @@ if __name__ == "__main__":
         128/32
 
     '''
-    input_size = 32
-    image_size = 512
-    # gen = Decoder(image_size, latent_dim=128, input_size=input_size )
-    # latent = torch.randn(2, 128, input_size, input_size)
-    # print(gen(latent).shape)
+    input_size = 8
+    image_size = 128
 
-    enc = Encoder(image_size, downsample=32) 
+    enc = Encoder(image_size, downsample=input_size, attn_res_layers=[64, 32])
     x = torch.randn((2, 3, image_size, image_size))
-    enc(x)
+    latents = enc(x)
+    print(latents.shape)
+    gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[64] )
+    latent = torch.randn(2, 128, input_size, input_size)
+    print(gen(latents).shape)
+    print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)
+    print(sum(p.numel() for p in gen.parameters() if p.requires_grad)/1e6)
+    print()
