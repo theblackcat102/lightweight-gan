@@ -2,7 +2,16 @@ from torch import nn
 from lightweight_gan.modules import *
 from lightweight_gan.quantizer import GumbelQuantize
 from lightweight_gan.lightweight_gan import Discriminator, \
-    set_requires_grad, Adam, AdaBelief, AugWrapper
+    set_requires_grad, Adam, AdaBelief, AugWrapper, get_dct_weights
+from lightweight_gan.lpips import LPIPS
+
+def adopt_weight(weight, global_step, threshold=0, value=0.):
+    if global_step < threshold:
+        weight = value
+    return weight
+
+
+
 
 class VAE(nn.Module):
     def __init__(self, 
@@ -14,7 +23,8 @@ class VAE(nn.Module):
         fmap_inverse_coef = 12,
         transparent = False,
         greyscale = False,
-        attn_res_layers = [],
+        enc_attn_res_layers = [],
+        dec_attn_res_layers = [],
         freq_chan_attn = False
     ):
         super().__init__()
@@ -28,8 +38,12 @@ class VAE(nn.Module):
             fmap_inverse_coef= fmap_inverse_coef,
             transparent = transparent,
             greyscale = greyscale,
-            attn_res_layers = attn_res_layers
+            attn_res_layers = enc_attn_res_layers
         )
+        freq_w, freq_h = ([0] * 8), list(range(8)) # in paper, it seems 16 frequencies was ideal
+        dct_weights = get_dct_weights(downsample_size, latent_dim, [*freq_w, *freq_h], [*freq_h, *freq_w])
+        self.register_buffer('dct_weights', dct_weights)
+
         self.quantizer = GumbelQuantize(latent_dim, vocab_size, latent_dim )
         self.decoder = Decoder(
             image_size,
@@ -39,14 +53,14 @@ class VAE(nn.Module):
             fmap_inverse_coef= fmap_inverse_coef,
             transparent = transparent,
             greyscale = greyscale,
-            attn_res_layers = attn_res_layers,
+            attn_res_layers = dec_attn_res_layers,
             freq_chan_attn = freq_chan_attn
         )
 
-    def forward(self, x):
+    def forward(self, x, temp=None):
         latents = self.encoder(x)
-        z_q, diff, ind = self.quantizer(latents)
-        recon_x = self.decoder(z_q)
+        z_q, diff, ind = self.quantizer(latents, temp=temp)
+        recon_x = self.decoder(z_q * self.dct_weights)
         return recon_x, z_q, diff, ind
 
 
@@ -65,6 +79,8 @@ class LightweightVQGAN(nn.Module):
         attn_res_layers = [],
         freq_chan_attn = False,
         ttur_mult = 2.,
+        perceptual_weight=1.0, # adaptive weight
+        disc_weight=1.0,# adaptive weight
         lr = 2e-4,
         rank = 0
     ):
@@ -80,7 +96,8 @@ class LightweightVQGAN(nn.Module):
             fmap_inverse_coef = fmap_inverse_coef,
             transparent = transparent,
             greyscale = greyscale,
-            attn_res_layers = attn_res_layers,
+            enc_attn_res_layers = attn_res_layers,
+            dec_attn_res_layers = attn_res_layers,
             freq_chan_attn = freq_chan_attn
         )
 
@@ -95,6 +112,10 @@ class LightweightVQGAN(nn.Module):
             attn_res_layers = attn_res_layers,
             disc_output_size = disc_output_size
         )
+        self.perceptual_loss = LPIPS().eval()
+        self.perceptual_weight = perceptual_weight
+        self.disc_weight = disc_weight
+        self.discriminator_iter_start = 250001
 
         self.ema_updater = EMA(0.995)
         self.GE = VAE(**G_kwargs)
@@ -114,6 +135,22 @@ class LightweightVQGAN(nn.Module):
 
         self.cuda(rank)
         self.D_aug = AugWrapper(self.D, image_size)
+    
+    def get_last_layer(self):
+        return self.G.decoder.out_conv.weight
+
+    def calculate_adaptive_weight(self, nll_loss, g_loss, last_layer=None):
+        if last_layer is not None:
+            nll_grads = torch.autograd.grad(nll_loss, last_layer, retain_graph=True)[0]
+            g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
+        else:
+            nll_grads = torch.autograd.grad(nll_loss, self.get_last_layer()[0], retain_graph=True)[0]
+            g_grads = torch.autograd.grad(g_loss, self.get_last_layer()[0], retain_graph=True)[0]
+
+        d_weight = torch.norm(nll_grads) / (torch.norm(g_grads) + 1e-4)
+        d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
+        d_weight = d_weight * self.disc_weight
+        return d_weight
 
     def _init_weights(self, m):
         if type(m) in {nn.Conv2d, nn.Linear}:
@@ -139,8 +176,17 @@ class LightweightVQGAN(nn.Module):
 
 
 if __name__ == '__main__':
-    input_size =8
+    input_size = 8
     image_size = 128
     gen = VAE(512, image_size=image_size, downsample_size=input_size)
-    latent = torch.randn(2, 128, input_size, input_size)
-    print(gen(latent).shape)
+    img = torch.randn(2, 3, image_size, image_size)
+    fake_img = gen(img)[0]
+    print(fake_img.shape)
+
+    D = Discriminator(
+            image_size = image_size,
+            fmap_max = 15,
+            disc_output_size = 5
+        )
+    out, out_32x32, aux_loss = D(fake_img)
+    print(out.shape)

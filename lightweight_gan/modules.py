@@ -500,7 +500,7 @@ if __name__ == "__main__":
     # print(gen(latent).shape)
  
     '''
-        
+
         128/16
         128/32
 
@@ -508,7 +508,7 @@ if __name__ == "__main__":
     input_size = 8
     image_size = 128
 
-    enc = Encoder(image_size, downsample=input_size, attn_res_layers=[64, 32])
+    enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
     x = torch.randn((2, 3, image_size, image_size))
     latents = enc(x)
     print(latents.shape)

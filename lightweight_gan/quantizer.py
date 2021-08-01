@@ -8,7 +8,7 @@ to backpropagate through the sampling process.
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
-
+from lightweight_gan.modules import default
 from scipy.cluster.vq import kmeans2
 
 # -----------------------------------------------------------------------------
@@ -93,12 +93,14 @@ class GumbelQuantize(nn.Module):
         )
         self.embed = nn.Embedding(n_embed, embedding_dim)
 
-    def forward(self, z):
+    def forward(self, z, temp=None):
         logits = self.proj(z)
         # force hard = True when we are in eval mode, as we must quantize
         hard = self.straight_through if self.training else True
 
-        soft_one_hot = F.gumbel_softmax(logits, tau=self.temperature, dim=1, hard=hard)
+        tau = default(temp, self.temperature)
+
+        soft_one_hot = F.gumbel_softmax(logits, tau=tau, dim=1, hard=hard)
         z_q = einsum('b n h w, n d -> b d h w', soft_one_hot, self.embed.weight)
 
         # + kl divergence to the prior loss
