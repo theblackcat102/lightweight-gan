@@ -34,6 +34,9 @@ flags.DEFINE_integer('image_size', 512, 'image size')
 flags.DEFINE_integer('downsample', 32, 'image down sample to')
 flags.DEFINE_integer('gradient_accumulate_every', 1, 'gradient accumulate every')
 flags.DEFINE_integer('num_train_steps', 100000, 'training iteration')
+flags.DEFINE_integer('fmap_max', 512, 'vae channel size')
+flags.DEFINE_integer('d_fmap_max', 512, 'discriminator channel size')
+
 flags.DEFINE_integer('disc_output_size', 1, 'discriminator output size')
 flags.DEFINE_boolean('dual_contrast_loss', False, 'dual constrastive loss for discriminator')
 
@@ -236,15 +239,17 @@ def train(argv):
         enc_attn_res_layers=FLAGS.enc_attn_res_layers,
         dec_attn_res_layers=FLAGS.dec_attn_res_layers,
         ttur_mult = FLAGS.ttur_mult,
+        fmap_max=FLAGS.fmap_max,
+        d_fmap_max=FLAGS.d_fmap_max,
         lr=FLAGS.learning_rate,
-        discriminator_iter_start=25001,
+        discriminator_iter_start=FLAGS.discriminator_iter_start,
     )
 
     amp = FLAGS.amp
     amp_context = autocast if amp else null_context
     G_scaler = GradScaler(enabled = amp)
     D_scaler = GradScaler(enabled = amp)
-
+    start_step = 0
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
         VQGAN.G.load_state_dict(state_dict['G'])
@@ -254,6 +259,7 @@ def train(argv):
 
         G_scaler.load_state_dict(state_dict['G_scaler'])
         D_scaler.load_state_dict(state_dict['D_scaler'])
+        start_step = state_dict['step']
 
     if FLAGS.num_gpus > 1:
         VQGAN.G = nn.DataParallel(VQGAN.G, device_ids=list(range(FLAGS.num_gpus)))
@@ -262,12 +268,14 @@ def train(argv):
 
     temp = FLAGS.init_temp
     store_sample(loader, 'results/{}/{}.jpg'.format(FLAGS.name, 'samples'))
+    with open(os.path.join('results/{}'.format(FLAGS.name), "flagfile.txt"), 'w') as f:
+        f.write(FLAGS.flags_into_string())
+
     D_opt = VQGAN.D_opt 
     G_opt = VQGAN.G_opt
 
     recon_only = FLAGS.recon_only
 
-    start_step = 0
     for step in range(start_step, FLAGS.num_train_steps):
 
         if step > FLAGS.discriminator_iter_start:

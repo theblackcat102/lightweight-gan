@@ -298,7 +298,7 @@ class Encoder(nn.Module):
         self,
         image_size,
         downsample,
-        n_hid=768,
+        n_hid = 768,
         fmap_max = 512,
         fmap_inverse_coef = 12,
         transparent = False,

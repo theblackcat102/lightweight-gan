@@ -13,6 +13,7 @@ import torch
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim import Adam
 from torch import nn, einsum
+import torch.nn.init as init
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.autograd import grad as torch_grad
@@ -27,7 +28,7 @@ from kornia import filter2d
 from lightweight_gan.diff_augment import DiffAugment
 from lightweight_gan.version import __version__
 from pytorch_gan_metrics import get_inception_score_and_fid
-
+from torch.nn.utils.spectral_norm import spectral_norm
 from tqdm import tqdm
 from einops import rearrange, reduce, repeat
 from lightweight_gan.modules import *
@@ -310,6 +311,21 @@ class SimpleDecoder(nn.Module):
             x = layer(x)
         return x
 
+
+def res_arch_init(model):
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+            if 'residual' in name:
+                init.xavier_uniform_(module.weight, gain=math.sqrt(2))
+            else:
+                init.xavier_uniform_(module.weight, gain=1.0)
+            if module.bias is not None:
+                init.zeros_(module.bias)
+        if isinstance(module, nn.Linear):
+            init.xavier_uniform_(module.weight, gain=1.0)
+            if module.bias is not None:
+                init.zeros_(module.bias)
+
 class Discriminator(nn.Module):
     def __init__(
         self,
@@ -357,7 +373,7 @@ class Discriminator(nn.Module):
 
             self.non_residual_layers.append(nn.Sequential(
                 Blur(),
-                nn.Conv2d(init_channel, chan_out, 4, stride = 2, padding = 1),
+                spectral_norm(nn.Conv2d(init_channel, chan_out, 4, stride = 2, padding = 1)),
                 nn.LeakyReLU(0.1)
             ))
 
@@ -374,15 +390,15 @@ class Discriminator(nn.Module):
                 SumBranches([
                     nn.Sequential(
                         Blur(),
-                        nn.Conv2d(chan_in, chan_out, 4, stride = 2, padding = 1),
+                        spectral_norm(nn.Conv2d(chan_in, chan_out, 4, stride = 2, padding = 1)),
                         nn.LeakyReLU(0.1),
-                        nn.Conv2d(chan_out, chan_out, 3, padding = 1),
+                        spectral_norm(nn.Conv2d(chan_out, chan_out, 3, padding = 1)),
                         nn.LeakyReLU(0.1)
                     ),
                     nn.Sequential(
                         Blur(),
                         nn.AvgPool2d(2),
-                        nn.Conv2d(chan_in, chan_out, 1),
+                        spectral_norm(nn.Conv2d(chan_in, chan_out, 1)),
                         nn.LeakyReLU(0.1),
                     )
                 ]),
@@ -392,16 +408,16 @@ class Discriminator(nn.Module):
         last_chan = features[-1][-1]
         if disc_output_size == 5:
             self.to_logits = nn.Sequential(
-                nn.Conv2d(last_chan, last_chan, 1),
+                spectral_norm(nn.Conv2d(last_chan, last_chan, 1)),
                 nn.LeakyReLU(0.1),
-                nn.Conv2d(last_chan, 1, 4)
+                spectral_norm(nn.Conv2d(last_chan, 1, 4))
             )
         elif disc_output_size == 1:
             self.to_logits = nn.Sequential(
                 Blur(),
-                nn.Conv2d(last_chan, last_chan, 3, stride = 2, padding = 1),
+                spectral_norm(nn.Conv2d(last_chan, last_chan, 3, stride = 2, padding = 1)),
                 nn.LeakyReLU(0.1),
-                nn.Conv2d(last_chan, 1, 4)
+                spectral_norm(nn.Conv2d(last_chan, 1, 4))
             )
 
         self.to_shape_disc_out = nn.Sequential(
@@ -410,25 +426,26 @@ class Discriminator(nn.Module):
             SumBranches([
                 nn.Sequential(
                     Blur(),
-                    nn.Conv2d(64, 32, 4, stride = 2, padding = 1),
+                    spectral_norm(nn.Conv2d(64, 32, 4, stride = 2, padding = 1)),
                     nn.LeakyReLU(0.1),
-                    nn.Conv2d(32, 32, 3, padding = 1),
+                    spectral_norm(nn.Conv2d(32, 32, 3, padding = 1)),
                     nn.LeakyReLU(0.1)
                 ),
                 nn.Sequential(
                     Blur(),
                     nn.AvgPool2d(2),
-                    nn.Conv2d(64, 32, 1),
+                    spectral_norm(nn.Conv2d(64, 32, 1)),
                     nn.LeakyReLU(0.1),
                 )
             ]),
             Residual(PreNorm(32, LinearAttention(32))),
             nn.AdaptiveAvgPool2d((4, 4)),
-            nn.Conv2d(32, 1, 4)
+            spectral_norm(nn.Conv2d(32, 1, 4))
         )
 
         self.decoder1 = SimpleDecoder(chan_in = last_chan, chan_out = init_channel)
         self.decoder2 = SimpleDecoder(chan_in = features[-2][-1], chan_out = init_channel) if resolution >= 9 else None
+        res_arch_init(self)
 
     def forward(self, x, calc_aux_loss = False):
         orig_img = x
