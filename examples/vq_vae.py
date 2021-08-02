@@ -12,7 +12,7 @@ import random
 import os, math
 import torchvision
 from torchvision import transforms
-
+from torch.optim.lr_scheduler import LambdaLR
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from lightweight_gan.diff_augment_test import DiffAugmentTest
@@ -34,6 +34,8 @@ flags.DEFINE_integer('image_size', 512, 'image size')
 flags.DEFINE_integer('downsample', 32, 'image down sample to')
 flags.DEFINE_integer('gradient_accumulate_every', 1, 'gradient accumulate every')
 flags.DEFINE_integer('num_train_steps', 100000, 'training iteration')
+flags.DEFINE_integer('warmup_steps', 1000, 'training iteration')
+
 flags.DEFINE_integer('fmap_max', 512, 'vae channel size')
 flags.DEFINE_integer('d_fmap_max', 512, 'discriminator channel size')
 
@@ -83,6 +85,13 @@ flags.DEFINE_string('checkpoint', None, 'start from checkpoint')
 
 
 flags.DEFINE_integer('num_workers', 10, 'number of worker')
+
+
+def lr_lambda(current_step):
+    learning_rate = max(0.0, 1. - (float(current_step) / float(FLAGS.num_train_steps)))
+    learning_rate *= min(1.0, float(current_step) / float(FLAGS.warmup_steps))
+    return learning_rate
+
 
 
 def step_dis(step, VQGAN, image_batch, amp_context,L_scaler, device='cuda', ):
@@ -252,6 +261,10 @@ def train(argv):
     G_scaler = GradScaler(enabled = amp)
     D_scaler = GradScaler(enabled = amp)
     start_step = 0
+
+    D_scheduler = LambdaLR(VQGAN.D_opt, lr_lambda, last_epoch=-1)
+    G_scheduler = LambdaLR(VQGAN.G_opt, lr_lambda, last_epoch=-1)
+
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
         VQGAN.G.load_state_dict(state_dict['G'])
@@ -289,6 +302,7 @@ def train(argv):
             D_opt.zero_grad()
             dis_loss = step_dis(step, VQGAN, image_batch, amp_context, D_scaler )
             D_scaler.step(D_opt)
+            D_scheduler.step()
             D_scaler.update()
 
         image_batch = next(loader).cuda()
@@ -306,6 +320,7 @@ def train(argv):
             print(step, gen_loss.item(), dis_loss.item(), temp)
 
         G_scaler.step(G_opt)
+        G_scheduler.step()
         G_scaler.update()
 
         if step % 10 == 0 and step > 20000:
@@ -333,6 +348,8 @@ def train(argv):
                 'D': VQGAN.D.state_dict() if FLAGS.num_gpus == 1 else VQGAN.D.module.state_dict(),
                 'D_opt': VQGAN.D_opt.state_dict(),
                 'G_opt': VQGAN.G_opt.state_dict(),
+                'G_scheduler': G_scheduler.state_dict(),
+                'D_scheduler': D_scheduler.state_dict(),
                 'G_scaler': G_scaler.state_dict(),
                 'D_scaler': D_scaler.state_dict(),
                 'step': step
