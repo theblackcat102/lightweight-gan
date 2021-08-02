@@ -202,13 +202,15 @@ def store_sample(loader, save_filename):
     with torch.no_grad():
         while total < (num_rows*num_rows):
             image_batch = next(loader)
-            generated_images.append(image_batch.clamp_(0., 1.) )
+            generated_images.append(image_batch )
             total += len(image_batch[0])
 
-    generated_images = torch.cat(generated_images)
-    images_grid = torchvision.utils.make_grid(generated_images[:int(num_rows**2)], nrow = num_rows)
+    generated_images_tensor = torch.cat(generated_images)
+    images_grid = torchvision.utils.make_grid(generated_images_tensor.clamp_(0., 1.)[:int(num_rows**2)], nrow = num_rows)
     pil_image = transforms.ToPILImage()(images_grid.cpu())
     pil_image.save(save_filename)
+
+    return generated_images
 
 def train(argv):
     if len(FLAGS.data) == 1:
@@ -267,7 +269,7 @@ def train(argv):
 
 
     temp = FLAGS.init_temp
-    store_sample(loader, 'results/{}/{}.jpg'.format(FLAGS.name, 'samples'))
+    img_samples = store_sample(loader, 'results/{}/{}.jpg'.format(FLAGS.name, 'samples'))
     with open(os.path.join('results/{}'.format(FLAGS.name), "flagfile.txt"), 'w') as f:
         f.write(FLAGS.flags_into_string())
 
@@ -314,8 +316,8 @@ def train(argv):
             total = 0
             num_rows = FLAGS.sample_grid_size
             with torch.no_grad():
-                while total < (num_rows*num_rows):
-                    image_batch = next(loader).cuda()
+                for image_batch in img_samples:
+                    image_batch = image_batch.cuda()
                     generated_images.append(VQGAN.G(image_batch)[0].cpu().clamp_(0., 1.) )
 
                     total += len(image_batch[0])
