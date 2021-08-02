@@ -310,7 +310,7 @@ class Encoder(nn.Module):
         # offset = 8 - log2(image_size // 8)
         # print(offset)
 
-        resolution = log2(image_size)
+        resolution = log2(image_size)+1
         assert is_power_of_two(image_size), 'image size must be a power of 2'
 
         resolution = int(resolution) 
@@ -377,7 +377,10 @@ class Encoder(nn.Module):
             if image_width == downsample:
                 break
         # last_chan = features[-1][-1]
-        self.output = nn.Conv2d(chan_out, n_hid, 1)
+        if image_size == 512 and downsample == 32:
+            self.output = nn.Conv2d(chan_out, n_hid, 3, stride=2, padding=1)
+        else:
+            self.output = nn.Conv2d(chan_out, n_hid, 1)
 
     def forward(self, x, calc_aux_loss = False):
         orig_img = x
@@ -510,16 +513,16 @@ if __name__ == "__main__":
         128/32
 
     '''
-    input_size = 8
-    image_size = 128
+    input_size = 32
+    image_size = 512
 
-    enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
-    x = torch.randn((2, 3, image_size, image_size))
-    latents = enc(x)
-    print('latents',latents.shape)
+    # enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
+    # x = torch.randn((2, 3, image_size, image_size))
+    # latents = enc(x)
+    # print('latents', latents.shape)
     gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[32], freq_chan_attn=False)
-    # latents = torch.randn(2, 768, input_size, input_size)
+    latents = torch.randn(2, 768, input_size, 43)
     print(gen(latents).shape)
-    # print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)
-    print(sum(p.numel() for p in gen.parameters() if p.requires_grad)/1e6)
-    print()
+    # # print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)
+    # print(sum(p.numel() for p in gen.parameters() if p.requires_grad)/1e6)
+    # print()

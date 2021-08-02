@@ -14,7 +14,7 @@ import torchvision
 from torchvision import transforms
 
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from lightweight_gan.diff_augment_test import DiffAugmentTest
 from lightweight_gan.lightweight_gan import ImageDataset, \
     GradScaler, \
@@ -25,7 +25,7 @@ from lightweight_gan.vq_gan import LightweightVQGAN, adopt_weight
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('name', 'default', 'Text to echo.')
-flags.DEFINE_string('data', './data', 'data directory')
+flags.DEFINE_list('data', './data', 'data directory')
 flags.DEFINE_float('learning_rate', 2e-4, 'learning rate')
 flags.DEFINE_float('ttur_mult', 1.0, 'TTUR multiplication for dis')
 
@@ -51,9 +51,12 @@ flags.DEFINE_integer('discriminator_iter_start', 25000, 'when to start discrimin
 
 # model parameters
 flags.DEFINE_integer('latent_dim', 768, 'latent dimension')
+flags.DEFINE_integer('vocab_size', 16384, 'latent dimension')
 # flags.DEFINE_integer('batch_size', 64, 'training batch size')
 flags.DEFINE_float('gp_weight', 10, 'augmentation probability')
 flags.DEFINE_float('recon_weight', 1, 'vae reconstruct probability')
+
+flags.DEFINE_integer('sample_grid_size', 8, 'grid size sample')
 
 flags.DEFINE_float('init_temp', 1.0, 'initial anneal temperature')
 flags.DEFINE_float('anneal_rate', 0.00005, 'initial anneal temperature')
@@ -205,7 +208,16 @@ def store_sample(loader, save_filename):
     pil_image.save(save_filename)
 
 def train(argv):
-    dataset = ImageDataset(FLAGS.data, FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob)
+    if len(FLAGS.data) == 1:
+        dataset = ImageDataset(FLAGS.data[0], FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob)
+    else:
+        print(FLAGS.data)
+        dataset = ConcatDataset(
+            [ 
+                ImageDataset(dataset_path, FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob) \
+                for dataset_path in FLAGS.data  ]
+        )
+
     dataloader = DataLoader(dataset, 
         num_workers = FLAGS.num_workers, 
         batch_size = FLAGS.batch_size, 
@@ -217,6 +229,7 @@ def train(argv):
         latent_dim=FLAGS.latent_dim,
         image_size=FLAGS.image_size,
         downsample_size=FLAGS.downsample,
+        vocab_size=FLAGS.vocab_size,
         attn_res_layers=FLAGS.attn_res_layers,
         freq_chan_attn=FLAGS.freq_chan_attn,
         perceptual_weight=FLAGS.perceptual_weight,
@@ -243,8 +256,8 @@ def train(argv):
         D_scaler.load_state_dict(state_dict['D_scaler'])
 
     if FLAGS.num_gpus > 1:
-        VQGAN.G = nn.DataParallel(VQGAN.G)
-        VQGAN.D = nn.DataParallel(VQGAN.D)
+        VQGAN.G = nn.DataParallel(VQGAN.G, device_ids=list(range(FLAGS.num_gpus)))
+        VQGAN.D = nn.DataParallel(VQGAN.D, device_ids=list(range(FLAGS.num_gpus)))
 
 
     temp = FLAGS.init_temp
@@ -254,7 +267,8 @@ def train(argv):
 
     recon_only = FLAGS.recon_only
 
-    for step in range(100000):
+    start_step = 0
+    for step in range(start_step, FLAGS.num_train_steps):
 
         if step > FLAGS.discriminator_iter_start:
             recon_only = False
@@ -290,7 +304,7 @@ def train(argv):
         if step % FLAGS.sample_every_steps == 0:
             generated_images = []
             total = 0
-            num_rows = 8
+            num_rows = FLAGS.sample_grid_size
             with torch.no_grad():
                 while total < (num_rows*num_rows):
                     image_batch = next(loader).cuda()
@@ -310,7 +324,8 @@ def train(argv):
                 'D_opt': VQGAN.D_opt.state_dict(),
                 'G_opt': VQGAN.G_opt.state_dict(),
                 'G_scaler': G_scaler.state_dict(),
-                'D_scaler': D_scaler.state_dict()
+                'D_scaler': D_scaler.state_dict(),
+                'step': step
             }
             torch.save(checkpoint, 'results/{}/model-{}.pt'.format( FLAGS.name, step ))
 

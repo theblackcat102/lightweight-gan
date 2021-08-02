@@ -71,6 +71,7 @@ class LightweightVQGAN(nn.Module):
         image_size,
         downsample_size=32,
         optimizer = "adam",
+        vocab_size=16384,
         fmap_max = 512,
         fmap_inverse_coef = 12,
         transparent = False,
@@ -94,6 +95,7 @@ class LightweightVQGAN(nn.Module):
         G_kwargs = dict(
             image_size = image_size,
             latent_dim = latent_dim,
+            vocab_size=vocab_size,
             downsample_size = downsample_size,
             fmap_max = fmap_max,
             fmap_inverse_coef = fmap_inverse_coef,

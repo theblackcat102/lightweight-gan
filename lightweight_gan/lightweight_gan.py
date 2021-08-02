@@ -1238,3 +1238,15 @@ class Trainer():
             return None
 
         return saved_nums
+
+
+
+if __name__ == "__main__":
+    from tqdm import tqdm
+    dataset = ImageDataset('/mnt/ssd1/news_img/', 127, aug_prob=0)
+    dataloader = DataLoader(dataset, 
+        num_workers = 10, 
+        batch_size = 128, 
+        shuffle = True)
+    for data in tqdm(dataloader):
+        continue
