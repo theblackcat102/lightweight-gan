@@ -79,6 +79,7 @@ flags.DEFINE_boolean('smooth_l1_loss', True, 'VAE loss function l1 or mse')
 flags.DEFINE_boolean('apply_gradient_penalty', True, 'transparent?')
 flags.DEFINE_boolean('greyscale', False, 'grayscale?')
 flags.DEFINE_boolean('amp', False, 'use amp')
+flags.DEFINE_boolean('viz', False, 'use amp')
 
 flags.DEFINE_string('optimizer', 'adam', 'optimizer')
 flags.DEFINE_integer('num_gpus', 1, 'number of GPUs')
@@ -226,7 +227,7 @@ def store_sample(loader, save_filename):
 
     return generated_images
 
-def train(argv):
+def train():
     if len(FLAGS.data) == 1:
         dataset = ImageDataset(FLAGS.data[0], FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob)
     else:
@@ -367,5 +368,95 @@ def train(argv):
             torch.save(checkpoint, 'results/{}/model-{}.pt'.format( FLAGS.name, step ))
 
 
+
+def viz_latent():
+    import seaborn as sns
+    import numpy as np
+    from collections import Counter
+
+    VQGAN = LightweightVQGAN(
+        latent_dim=FLAGS.latent_dim,
+        image_size=FLAGS.image_size,
+        downsample_size=FLAGS.downsample,
+        vocab_size=FLAGS.vocab_size,
+        attn_res_layers=FLAGS.attn_res_layers,
+        freq_chan_attn=FLAGS.freq_chan_attn,
+        perceptual_weight=FLAGS.perceptual_weight,
+        enc_attn_res_layers=FLAGS.enc_attn_res_layers,
+        dec_attn_res_layers=FLAGS.dec_attn_res_layers,
+        ttur_mult = FLAGS.ttur_mult,
+        fmap_max=FLAGS.fmap_max,
+        d_fmap_max=FLAGS.d_fmap_max,
+        lr=FLAGS.learning_rate,
+        discriminator_iter_start=FLAGS.discriminator_iter_start,
+    )
+    if FLAGS.checkpoint is not None:
+        state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
+        VQGAN.G.load_state_dict(state_dict['G'])
+        VQGAN.D.load_state_dict(state_dict['D'])
+        step = state_dict['step']
+    VQGAN.eval()
+
+    sub_latent = []
+    with torch.no_grad():
+        for idx in tqdm(range(FLAGS.vocab_size), dynamic_ncols=True):
+            latent = VQGAN.G.quantizer.embed( torch.Tensor([idx]).long().cuda() )
+            sub_img = VQGAN.G.decoder(latent.view(1, FLAGS.latent_dim, 1, 1))
+            sub_latent.append(sub_img.cpu())
+
+
+    generated_images = torch.cat(sub_latent)
+
+    images_grid = torchvision.utils.make_grid(generated_images, nrow = FLAGS.vocab_size//128)
+    pil_image = transforms.ToPILImage()(images_grid.cpu())
+    (width, height) = (pil_image.width // 4, pil_image.height // 4)
+    pil_image = pil_image.resize((width, height))
+    pil_image.save('results/{}/latents_{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
+
+
+    if len(FLAGS.data) == 1:
+        dataset = ImageDataset(FLAGS.data[0], FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob)
+    else:
+        print(FLAGS.data)
+        dataset = ConcatDataset(
+            [ 
+                ImageDataset(dataset_path, FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob) \
+                for dataset_path in FLAGS.data  ]
+        )
+
+    dataloader = DataLoader(dataset, 
+        num_workers = FLAGS.num_workers, 
+        batch_size = FLAGS.batch_size, 
+        shuffle = True, drop_last = True, pin_memory = True)
+
+    
+    stats = np.zeros(( (FLAGS.vocab_size//128) * 130) )
+    num_img = 0
+    with torch.no_grad():
+        for img_batch in dataloader:
+            latents = VQGAN.G.encoder(img_batch.cuda())
+            z_q, diff, ind = VQGAN.G.quantizer(latents)
+            for idx in ind.flatten():
+                stats[idx.item()] += 1
+    
+            num_img +=1 
+            if num_img > 64:
+                break
+
+    stats_cnt = Counter([ freq for freq in stats[:FLAGS.vocab_size]])
+    print(step, stats_cnt[0], stats_cnt[0]/FLAGS.vocab_size )
+    stats = stats.reshape(130, -1)
+    ax = sns.heatmap(stats)
+    ax.figure.savefig('results/{}/heatmap_{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
+
+
+
+def main(argv):
+    if FLAGS.viz:
+        viz_latent()
+    else:
+        train()
+
+
 if __name__ == '__main__':
-  app.run(train)
+  app.run(main)
