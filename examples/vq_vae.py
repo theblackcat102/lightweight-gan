@@ -33,6 +33,8 @@ flags.DEFINE_integer('batch_size', 10, 'training batch size')
 flags.DEFINE_integer('image_size', 512, 'image size')
 flags.DEFINE_integer('downsample', 32, 'image down sample to')
 flags.DEFINE_integer('gradient_accumulate_every', 1, 'gradient accumulate every')
+flags.DEFINE_integer('dis_step', 1, 'gradient accumulate every')
+
 flags.DEFINE_integer('num_train_steps', 100000, 'training iteration')
 flags.DEFINE_integer('warmup_steps', 1000, 'training iteration')
 
@@ -109,7 +111,7 @@ def step_dis(step, VQGAN, image_batch, amp_context,L_scaler, device='cuda', ):
         D_loss_fn = hinge_loss
 
     # grad acc here
-    for _ in range(FLAGS.gradient_accumulate_every):
+    for _ in range(FLAGS.gradient_accumulate_every * FLAGS.dis_step):
         with amp_context():
             with torch.no_grad():
                 generated_images = G(image_batch)
