@@ -466,8 +466,9 @@ class Decoder(nn.Module):
 
             layer = nn.ModuleList([
                 nn.Sequential(
-                    upsample(),
-                    nn.Conv2d(chan_in, chan_out * 2, 3, padding = 1),
+                    # upsample(),
+                    nn.ConvTranspose2d(chan_in, chan_out * 2, kernel_size=4, stride=2, padding=1),
+                    # nn.Conv2d(chan_in, chan_out * 2, 3, padding = 1),
                     norm_class(chan_out * 2),
                     nn.GLU(dim = 1)
                 ),

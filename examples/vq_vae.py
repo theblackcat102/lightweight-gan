@@ -69,6 +69,7 @@ flags.DEFINE_float('min_temp', 0.5, 'minimum anneal temperature')
 flags.DEFINE_integer('update_temp', 100, 'when to update temperature')
 
 flags.DEFINE_float('perceptual_weight', 1.0, 'minimum anneal temperature')
+flags.DEFINE_float('c', 0.01, 'minimum anneal temperature')
 
 flags.DEFINE_boolean('transparent', False, 'transparent?')
 flags.DEFINE_boolean('smooth_l1_loss', True, 'VAE loss function l1 or mse')
@@ -112,9 +113,11 @@ def step_dis(step, VQGAN, image_batch, amp_context,L_scaler, device='cuda', ):
         with amp_context():
             with torch.no_grad():
                 generated_images = G(image_batch)
-            fake_output, fake_output_32x32, _ = D_aug(generated_images[0], detach = True, **aug_kwargs)
+            fake_output, fake_output_32x32, _ = D_aug(
+                generated_images[0] + torch.rand_like(generated_images[0]) / 128, detach = True, **aug_kwargs)
 
-            real_output, real_output_32x32, real_aux_loss = D_aug(image_batch,  calc_aux_loss = True, **aug_kwargs)
+            real_output, real_output_32x32, real_aux_loss = D_aug(
+                image_batch+ torch.rand_like(image_batch) / 128,  calc_aux_loss = True, **aug_kwargs)
 
             real_output_loss = real_output
             fake_output_loss = fake_output
@@ -290,6 +293,11 @@ def train(argv):
     G_opt = VQGAN.G_opt
 
     recon_only = FLAGS.recon_only
+
+
+    '''
+    Tensorboard loggging
+    '''
 
     for step in range(start_step, FLAGS.num_train_steps):
 
