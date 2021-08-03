@@ -341,7 +341,6 @@ class Encoder(nn.Module):
             chan_out = features[0][-1] if last_layer else init_channel
 
             self.non_residual_layers.append(nn.Sequential(
-                Blur(),
                 nn.Conv2d(init_channel, chan_out, 3, stride = 1, padding = 1),
                 nn.LeakyReLU(0.1)
             ))
@@ -358,14 +357,12 @@ class Encoder(nn.Module):
             self.residual_layers.append(nn.ModuleList([
                 SumBranches([
                     nn.Sequential(
-                        Blur(),
                         nn.Conv2d(chan_in, chan_out, 4, stride = 2, padding = 1),
                         nn.LeakyReLU(0.1),
                         nn.Conv2d(chan_out, chan_out, 3, padding = 1),
                         nn.LeakyReLU(0.1)
                     ),
                     nn.Sequential(
-                        Blur(),
                         nn.AvgPool2d(2),
                         nn.Conv2d(chan_in, chan_out, 1),
                         nn.LeakyReLU(0.1),
@@ -470,7 +467,6 @@ class Decoder(nn.Module):
             layer = nn.ModuleList([
                 nn.Sequential(
                     upsample(),
-                    Blur(),
                     nn.Conv2d(chan_in, chan_out * 2, 3, padding = 1),
                     norm_class(chan_out * 2),
                     nn.GLU(dim = 1)
