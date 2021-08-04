@@ -258,6 +258,7 @@ def train():
         ttur_mult = FLAGS.ttur_mult,
         fmap_max=FLAGS.fmap_max,
         d_fmap_max=FLAGS.d_fmap_max,
+        optimizer=FLAGS.optimizer,
         lr=FLAGS.learning_rate,
         discriminator_iter_start=FLAGS.discriminator_iter_start,
     )
@@ -274,12 +275,12 @@ def train():
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
         VQGAN.G.load_state_dict(state_dict['G'])
-        VQGAN.D.load_state_dict(state_dict['D'])
-        VQGAN.D_opt.load_state_dict(state_dict['D_opt'])
+        # VQGAN.D.load_state_dict(state_dict['D'])
+        # VQGAN.D_opt.load_state_dict(state_dict['D_opt'])
         VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
 
         G_scaler.load_state_dict(state_dict['G_scaler'])
-        D_scaler.load_state_dict(state_dict['D_scaler'])
+        # D_scaler.load_state_dict(state_dict['D_scaler'])
         start_step = state_dict['step']
 
     if FLAGS.num_gpus > 1:
@@ -400,8 +401,8 @@ def viz_latent():
     sub_latent = []
     with torch.no_grad():
         for idx in tqdm(range(FLAGS.vocab_size), dynamic_ncols=True):
-            latent = VQGAN.G.quantizer.embed( torch.Tensor([idx]).long().cuda() )
-            sub_img = VQGAN.G.decoder(latent.view(1, FLAGS.latent_dim, 1, 1))
+            latent = VQGAN.GE.quantizer.embed( torch.Tensor([idx]).long().cuda() )
+            sub_img = VQGAN.GE.decoder(latent.view(1, FLAGS.latent_dim, 1, 1))
             sub_latent.append(sub_img.cpu())
 
 
@@ -434,8 +435,8 @@ def viz_latent():
     num_img = 0
     with torch.no_grad():
         for img_batch in dataloader:
-            latents = VQGAN.G.encoder(img_batch.cuda())
-            z_q, diff, ind = VQGAN.G.quantizer(latents)
+            latents = VQGAN.GE.encoder(img_batch.cuda())
+            z_q, diff, ind = VQGAN.GE.quantizer(latents)
             for idx in ind.flatten():
                 stats[idx.item()] += 1
     

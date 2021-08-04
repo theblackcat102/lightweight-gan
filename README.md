@@ -10,6 +10,19 @@
 
 *Pizza*
 
+## Notes to training stable VQ-GAN
+
+* Use hinge loss (non saturating loss) instead of the original binary crossentropy
+
+* Using perceptual of L1/L2 loss doesn't really worth the additional weights and memory cost
+
+* Use TTUR with large multiplier, based on my observation discriminator fails to discriminate real and generate image on the early stage ( or when discriminator loss is turned on )
+
+* Balanced discriminator size, 2: 1 parameters ratio for autoencoder and discriminator seems to work fine. 4: 1 doesn't work
+
+
+
+
 ## 'Lightweight' GAN
 
 [![PyPI version](https://badge.fury.io/py/lightweight-gan.svg)](https://badge.fury.io/py/lightweight-gan)
