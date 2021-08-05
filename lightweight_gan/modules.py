@@ -5,8 +5,13 @@ import math
 from math import log2, floor
 from functools import partial
 from kornia import filter2d
+import functools
 import torch
 import torch.nn.functional as F
+import torch
+import torch.nn as nn
+import torch.nn.init as init
+from torch.nn.utils.spectral_norm import spectral_norm
 
 def exists(val):
     return val is not None
@@ -499,6 +504,227 @@ class Decoder(nn.Module):
 
         return self.out_conv(x)
 
+
+class OptimizedResDisblock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.shortcut = nn.Sequential(
+            nn.AvgPool2d(2),
+            spectral_norm(nn.Conv2d(in_channels, out_channels, 1, 1, 0)))
+        self.residual = nn.Sequential(
+            spectral_norm(nn.Conv2d(in_channels, out_channels, 3, 1, 1)),
+            nn.ReLU(),
+            spectral_norm(nn.Conv2d(out_channels, out_channels, 3, 1, 1)),
+            nn.AvgPool2d(2))
+
+    def forward(self, x):
+        return self.residual(x) + self.shortcut(x)
+
+
+class ResDisBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, down=False):
+        super().__init__()
+        shortcut = []
+        if in_channels != out_channels or down:
+            shortcut.append(spectral_norm(
+                nn.Conv2d(in_channels, out_channels, 1, 1, 0)))
+        if down:
+            shortcut.append(nn.AvgPool2d(2))
+        self.shortcut = nn.Sequential(*shortcut)
+
+        residual = [
+            nn.ReLU(),
+            spectral_norm(nn.Conv2d(in_channels, out_channels, 3, 1, 1)),
+            nn.ReLU(),
+            spectral_norm(nn.Conv2d(out_channels, out_channels, 3, 1, 1)),
+        ]
+        if down:
+            residual.append(nn.AvgPool2d(2))
+        self.residual = nn.Sequential(*residual)
+
+    def forward(self, x):
+        return (self.residual(x) + self.shortcut(x))
+
+
+class ResDiscriminator(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.Sequential(
+            OptimizedResDisblock(3, 64),
+            ResDisBlock(64, 128, down=True),
+            ResDisBlock(128, 128, down=True),
+            ResDisBlock(128, 256, down=True),
+            ResDisBlock(256, 512, down=True),
+            nn.ReLU())
+        self.linear = spectral_norm(nn.Linear(512, 1, bias=False))
+        res_arch_init(self)
+
+    def forward(self, x):
+        x = self.model(x).sum(dim=[2, 3])
+        x = self.linear(x)
+        return x
+
+
+def res_arch_init(model):
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+            if 'residual' in name:
+                init.xavier_uniform_(module.weight, gain=math.sqrt(2))
+            else:
+                init.xavier_uniform_(module.weight, gain=1.0)
+            if module.bias is not None:
+                init.zeros_(module.bias)
+        if isinstance(module, nn.Linear):
+            init.xavier_uniform_(module.weight, gain=1.0)
+            if module.bias is not None:
+                init.zeros_(module.bias)
+
+
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+
+class ActNorm(nn.Module):
+    def __init__(self, num_features, logdet=False, affine=True,
+                 allow_reverse_init=False):
+        assert affine
+        super().__init__()
+        self.logdet = logdet
+        self.loc = nn.Parameter(torch.zeros(1, num_features, 1, 1))
+        self.scale = nn.Parameter(torch.ones(1, num_features, 1, 1))
+        self.allow_reverse_init = allow_reverse_init
+
+        self.register_buffer('initialized', torch.tensor(0, dtype=torch.uint8))
+
+    def initialize(self, input):
+        with torch.no_grad():
+            flatten = input.permute(1, 0, 2, 3).contiguous().view(input.shape[1], -1)
+            mean = (
+                flatten.mean(1)
+                .unsqueeze(1)
+                .unsqueeze(2)
+                .unsqueeze(3)
+                .permute(1, 0, 2, 3)
+            )
+            std = (
+                flatten.std(1)
+                .unsqueeze(1)
+                .unsqueeze(2)
+                .unsqueeze(3)
+                .permute(1, 0, 2, 3)
+            )
+
+            self.loc.data.copy_(-mean)
+            self.scale.data.copy_(1 / (std + 1e-6))
+
+    def forward(self, input, reverse=False):
+        if reverse:
+            return self.reverse(input)
+        if len(input.shape) == 2:
+            input = input[:,:,None,None]
+            squeeze = True
+        else:
+            squeeze = False
+
+        _, _, height, width = input.shape
+
+        if self.training and self.initialized.item() == 0:
+            self.initialize(input)
+            self.initialized.fill_(1)
+
+        h = self.scale * (input + self.loc)
+
+        if squeeze:
+            h = h.squeeze(-1).squeeze(-1)
+
+        if self.logdet:
+            log_abs = torch.log(torch.abs(self.scale))
+            logdet = height*width*torch.sum(log_abs)
+            logdet = logdet * torch.ones(input.shape[0]).to(input)
+            return h, logdet
+
+        return h
+
+    def reverse(self, output):
+        if self.training and self.initialized.item() == 0:
+            if not self.allow_reverse_init:
+                raise RuntimeError(
+                    "Initializing ActNorm in reverse direction is "
+                    "disabled by default. Use allow_reverse_init=True to enable."
+                )
+            else:
+                self.initialize(output)
+                self.initialized.fill_(1)
+
+        if len(output.shape) == 2:
+            output = output[:,:,None,None]
+            squeeze = True
+        else:
+            squeeze = False
+
+        h = output / self.scale - self.loc
+
+        if squeeze:
+            h = h.squeeze(-1).squeeze(-1)
+        return h
+
+class PatchGAN(nn.Module):
+    """Defines a PatchGAN discriminator as in Pix2Pix
+        --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py
+    """
+    def __init__(self, input_nc=3, ndf=64, n_layers=3, use_actnorm=False):
+        """Construct a PatchGAN discriminator
+        Parameters:
+            input_nc (int)  -- the number of channels in input images
+            ndf (int)       -- the number of filters in the last conv layer
+            n_layers (int)  -- the number of conv layers in the discriminator
+            norm_layer      -- normalization layer
+        """
+        super(PatchGAN, self).__init__()
+        if not use_actnorm:
+            norm_layer = nn.BatchNorm2d
+        else:
+            norm_layer = ActNorm
+        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+            use_bias = norm_layer.func != nn.BatchNorm2d
+        else:
+            use_bias = norm_layer != nn.BatchNorm2d
+
+        kw = 4
+        padw = 1
+        sequence = [nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):  # gradually increase the number of filters
+            nf_mult_prev = nf_mult
+            nf_mult = min(2 ** n, 8)
+            sequence += [
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
+                norm_layer(ndf * nf_mult),
+                nn.LeakyReLU(0.2, True)
+            ]
+
+        nf_mult_prev = nf_mult
+        nf_mult = min(2 ** n_layers, 8)
+        sequence += [
+            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+            norm_layer(ndf * nf_mult),
+            nn.LeakyReLU(0.2, True)
+        ]
+
+        sequence += [
+            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
+        self.main = nn.Sequential(*sequence)
+
+    def forward(self, input):
+        """Standard forward."""
+        return self.main(input)
+
+
 if __name__ == "__main__":
     # gen = Generator(128, latent_dim=128 )
     # latent = torch.randn(2, 128)
@@ -510,16 +736,18 @@ if __name__ == "__main__":
         128/32
 
     '''
-    input_size = 32
-    image_size = 512
+    input_size = 16
+    image_size = 256
 
     # enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
-    # x = torch.randn((2, 3, image_size, image_size))
+    x = torch.randn((2, 3, image_size, image_size))
+    dis = PatchGAN(n_layers=5)
+    print(dis(x).shape)
     # latents = enc(x)
     # print('latents', latents.shape)
-    gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[32], freq_chan_attn=False)
-    latents = torch.randn(2, 768, 1, 1)
-    print(gen(latents).shape)
+    # gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[32], freq_chan_attn=False)
+    # latents = torch.randn(2, 768, 1, 1)
+    # print(gen(latents).shape)
     # # print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)
     # print(sum(p.numel() for p in gen.parameters() if p.requires_grad)/1e6)
     # print()

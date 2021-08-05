@@ -22,6 +22,8 @@ from lightweight_gan.lightweight_gan import ImageDataset, \
     autocast, null_context, safe_div, raise_if_nan, torch_grad
 from absl import flags, app
 from lightweight_gan.vq_gan import LightweightVQGAN, adopt_weight
+from tensorboardX import SummaryWriter
+
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('name', 'default', 'Text to echo.')
@@ -72,6 +74,10 @@ flags.DEFINE_integer('update_temp', 100, 'when to update temperature')
 
 flags.DEFINE_float('perceptual_weight', 1.0, 'minimum anneal temperature')
 flags.DEFINE_float('c', 0.01, 'minimum anneal temperature')
+flags.DEFINE_float('disc_weight', 1.0, 'adaptive dis weight factor')
+flags.DEFINE_string('dis_type', 'lightweight', 'adaptive dis weight factor')
+
+flags.DEFINE_boolean('detach_z', False, 'detach vae latent')
 
 flags.DEFINE_boolean('transparent', False, 'transparent?')
 flags.DEFINE_boolean('smooth_l1_loss', True, 'VAE loss function l1 or mse')
@@ -93,7 +99,8 @@ flags.DEFINE_integer('num_workers', 10, 'number of worker')
 
 def lr_lambda(current_step):
     learning_rate = max(0.0, 1. - (float(current_step) / float(FLAGS.num_train_steps)))
-    learning_rate *= min(1.0, float(current_step) / float(FLAGS.warmup_steps))
+    if FLAGS.warmup_steps > 0:
+        learning_rate *= min(1.0, float(current_step) / float(FLAGS.warmup_steps))
     return learning_rate
 
 
@@ -102,6 +109,7 @@ def step_dis(step, VQGAN, image_batch, amp_context,L_scaler, device='cuda', ):
     aug_prob   = default(FLAGS.aug_prob, 0)
     aug_types  = FLAGS.aug_types
     aug_kwargs = {'prob': aug_prob, 'types': aug_types}
+    logs = {}
 
     total_disc_loss = torch.zeros([], device=device)
     G = VQGAN.G
@@ -116,23 +124,37 @@ def step_dis(step, VQGAN, image_batch, amp_context,L_scaler, device='cuda', ):
         with amp_context():
             with torch.no_grad():
                 generated_images = G(image_batch)
-            fake_output, fake_output_32x32, _ = D_aug(
-                generated_images[0] + torch.rand_like(generated_images[0]) / 128, detach = True, **aug_kwargs)
 
-            real_output, real_output_32x32, real_aux_loss = D_aug(
-                image_batch+ torch.rand_like(image_batch) / 128,  calc_aux_loss = True, **aug_kwargs)
+            if FLAGS.dis_type == 'lightweight':
+                fake_output, fake_output_32x32, _ = D_aug(
+                    generated_images[0], detach = True, **aug_kwargs)
 
-            real_output_loss = real_output
-            fake_output_loss = fake_output
-            divergence = D_loss_fn(real_output_loss, fake_output_loss)
-            divergence_32x32 = D_loss_fn(real_output_32x32, fake_output_32x32)
-            disc_loss = divergence + divergence_32x32
+                real_output, real_output_32x32, real_aux_loss = D_aug(
+                    image_batch,  calc_aux_loss = True, **aug_kwargs)
 
-            aux_loss = real_aux_loss
-            disc_loss = disc_loss + aux_loss
+                real_output_loss = real_output
+                fake_output_loss = fake_output
+                divergence = D_loss_fn(real_output_loss, fake_output_loss)
+
+                logs['D/divergence'] = divergence.item()
+                divergence_32x32 = D_loss_fn(real_output_32x32, fake_output_32x32)
+                disc_loss = divergence + divergence_32x32
+
+                aux_loss = real_aux_loss
+                logs['D/aux'] = real_aux_loss.item()
+                disc_loss = disc_loss + aux_loss
+            else:
+                fake_output = D_aug(generated_images[0])
+                real_output =  D_aug(image_batch)
+                divergence = D_loss_fn(real_output, fake_output)
+                disc_loss = divergence
+                logs['D/divergence'] = disc_loss.item()
 
         if FLAGS.apply_gradient_penalty:
-            outputs = [real_output, real_output_32x32]
+            if FLAGS.dis_type == 'lightweight':
+                outputs = [real_output, real_output_32x32]
+            else:
+                outputs = [real_output]
             outputs = list(map(L_scaler.scale, outputs)) if FLAGS.amp else outputs
 
             scaled_gradients = torch_grad(outputs=outputs, inputs=image_batch,
@@ -147,24 +169,25 @@ def step_dis(step, VQGAN, image_batch, amp_context,L_scaler, device='cuda', ):
                 with amp_context():
                     gradients = gradients.reshape(FLAGS.batch_size, -1)
                     gp = FLAGS.gp_weight * ((gradients.norm(2, dim=1) - 1) ** 2).mean()
-
+                    logs['D/gp'] = gp.item()
                     if not torch.isnan(gp):
                         disc_loss = disc_loss + gp
                         last_gp_loss = gp.clone().detach().item()
 
         with amp_context():
-            disc_loss = disc_loss / FLAGS.gradient_accumulate_every
+            disc_loss = disc_loss / (FLAGS.gradient_accumulate_every * FLAGS.dis_step)
 
         disc_loss.register_hook(raise_if_nan)
         L_scaler.scale(disc_loss).backward()
         total_disc_loss += divergence
-    return total_disc_loss / FLAGS.gradient_accumulate_every
+    return total_disc_loss / (FLAGS.gradient_accumulate_every * FLAGS.dis_step), logs
 
 def step_gen(step, VQGAN, image_batch, amp_context, L_scaler, device='cuda', recon_only=False, temp=1.0):
     aug_prob   = default(FLAGS.aug_prob, 0)
     aug_types  = FLAGS.aug_types
     aug_kwargs = {'prob': aug_prob, 'types': aug_types}
     total_gen_loss = torch.zeros([], device=device)
+    logs = {}
     
     G = VQGAN.G
     D_aug = VQGAN.D_aug
@@ -187,28 +210,39 @@ def step_gen(step, VQGAN, image_batch, amp_context, L_scaler, device='cuda', rec
             else:
                 p_loss = torch.tensor([0.0])
           
-
+            logs['G/recon'] = loss.item()
             gen_loss = loss * FLAGS.recon_weight \
                 + latent_loss.mean()
             if not recon_only and step > FLAGS.discriminator_iter_start:
-                fake_output, fake_output_32x32, _ = D_aug(generated_images, **aug_kwargs)
-                real_output, real_output_32x32, _ = D_aug(image_batch, **aug_kwargs) if G_requires_calc_real else (None, None, None)
+                # generated_images = G(z_q.detach() , decode_only=True)
+                if FLAGS.dis_type == 'lightweight':
+                    fake_output, fake_output_32x32, _ = D_aug(generated_images, **aug_kwargs)
+                    real_output, real_output_32x32, _ = D_aug(image_batch, **aug_kwargs) if G_requires_calc_real else (None, None, None)
+                    loss_32x32 = G_loss_fn(fake_output_32x32, real_output_32x32)
+
+                else:
+                    fake_output = D_aug(generated_images)
+                    real_output = D_aug(image_batch)
 
                 g_loss = G_loss_fn(fake_output, real_output)
+                if FLAGS.dis_type == 'lightweight':
+                    g_loss += loss_32x32
 
                 d_weight = VQGAN.calculate_adaptive_weight(gen_loss, g_loss)
                 disc_factor = adopt_weight(VQGAN.disc_factor, step, threshold=FLAGS.discriminator_iter_start)
 
-                loss_32x32 = G_loss_fn(fake_output_32x32, real_output_32x32)
+                logs['G/d_weight'] = d_weight.item()
+                logs['G/g_loss'] = g_loss.item()
+                logs['G/disc_factor'] = disc_factor
 
-                gen_loss += (g_loss + loss_32x32 ) * d_weight * disc_factor
+                gen_loss += g_loss  * d_weight * disc_factor
             gen_loss = gen_loss / FLAGS.gradient_accumulate_every
 
         gen_loss.register_hook(raise_if_nan)
         L_scaler.scale(gen_loss).backward()
         total_gen_loss += loss
 
-    return total_gen_loss / FLAGS.gradient_accumulate_every
+    return total_gen_loss / FLAGS.gradient_accumulate_every, logs
 
 def store_sample(loader, save_filename):
     generated_images = []
@@ -258,6 +292,8 @@ def train():
         ttur_mult = FLAGS.ttur_mult,
         fmap_max=FLAGS.fmap_max,
         d_fmap_max=FLAGS.d_fmap_max,
+        disc_weight=FLAGS.disc_weight,
+        disc_type=FLAGS.dis_type,
         optimizer=FLAGS.optimizer,
         lr=FLAGS.learning_rate,
         discriminator_iter_start=FLAGS.discriminator_iter_start,
@@ -275,12 +311,18 @@ def train():
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
         VQGAN.G.load_state_dict(state_dict['G'])
-        # VQGAN.D.load_state_dict(state_dict['D'])
-        # VQGAN.D_opt.load_state_dict(state_dict['D_opt'])
-        VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
+        # disable these seems to work for GAN stage
 
-        G_scaler.load_state_dict(state_dict['G_scaler'])
+        # VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
+        # G_scaler.load_state_dict(state_dict['G_scaler'])
+        # G_scheduler.load_state_dict(state_dict['G_scheduler'])
+
+        # VQGAN.D.load_state_dict(state_dict['D'])
+
+        # VQGAN.D_opt.load_state_dict(state_dict['D_opt'])
         # D_scaler.load_state_dict(state_dict['D_scaler'])
+        # D_scheduler.load_state_dict(state_dict['D_scheduler'])
+
         start_step = state_dict['step']
 
     if FLAGS.num_gpus > 1:
@@ -298,7 +340,7 @@ def train():
 
     recon_only = FLAGS.recon_only
 
-
+    writer = SummaryWriter('results/{}'.format(FLAGS.name))
     '''
     Tensorboard loggging
     '''
@@ -312,7 +354,9 @@ def train():
             image_batch = next(loader).cuda()
             image_batch.requires_grad_()
             D_opt.zero_grad()
-            dis_loss = step_dis(step, VQGAN, image_batch, amp_context, D_scaler )
+            dis_loss, logs = step_dis(step, VQGAN, image_batch, amp_context, D_scaler )
+            for key, item in logs.items():
+                writer.add_scalar(key, item, step)
             D_scaler.step(D_opt)
             D_scheduler.step()
             D_scaler.update()
@@ -324,7 +368,9 @@ def train():
 
         if step % FLAGS.update_temp == 0:
             temp = np.maximum(FLAGS.init_temp * np.exp(-FLAGS.anneal_rate * step), FLAGS.min_temp)
-        gen_loss = step_gen(step, VQGAN, image_batch, amp_context, G_scaler, recon_only=recon_only, temp=temp)
+        gen_loss, logs = step_gen(step, VQGAN, image_batch, amp_context, G_scaler, recon_only=recon_only, temp=temp)
+        for key, item in logs.items():
+            writer.add_scalar(key, item, step)
 
         if recon_only:
             print(step, gen_loss.item(), temp)
@@ -394,7 +440,7 @@ def viz_latent():
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
         VQGAN.G.load_state_dict(state_dict['G'])
-        VQGAN.D.load_state_dict(state_dict['D'])
+        # VQGAN.D.load_state_dict(state_dict['D'])
         step = state_dict['step']
     VQGAN.eval()
 

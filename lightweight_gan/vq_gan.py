@@ -58,7 +58,11 @@ class VAE(nn.Module):
         )
         res_arch_init(self)
 
-    def forward(self, x, temp=None):
+    def forward(self, x, temp=None, decode_only=False):
+        if decode_only:
+            recon_x = self.decoder(x * self.dct_weights)
+            return recon_x
+
         latents = self.encoder(x)
         z_q, diff, ind = self.quantizer(latents, temp=temp)
         recon_x = self.decoder(z_q * self.dct_weights)
@@ -85,6 +89,7 @@ class LightweightVQGAN(nn.Module):
         freq_chan_attn = False,
         ttur_mult = 2.,
         perceptual_weight=1.0, # adaptive weight
+        disc_type='lightweight', # lightweight, res
         disc_weight=1.0,# adaptive weight
         discriminator_iter_start=25001,
         lr = 2e-4,
@@ -109,16 +114,24 @@ class LightweightVQGAN(nn.Module):
         )
 
         self.G = VAE(**G_kwargs)
+        if disc_type == 'lightweight':
+            self.D = Discriminator(
+                image_size = image_size,
+                fmap_max = d_fmap_max,
+                fmap_inverse_coef = fmap_inverse_coef,
+                transparent = transparent,
+                greyscale = greyscale,
+                attn_res_layers = attn_res_layers,
+                disc_output_size = disc_output_size
+            )
+        elif disc_type == 'res':
+            # PatchGAN
+            self.D = ResDiscriminator()
+        elif disc_type == 'patch':
+            # PatchGAN
+            print('use patch')
+            self.D = PatchGAN(n_layers=5)
 
-        self.D = Discriminator(
-            image_size = image_size,
-            fmap_max = d_fmap_max,
-            fmap_inverse_coef = fmap_inverse_coef,
-            transparent = transparent,
-            greyscale = greyscale,
-            attn_res_layers = attn_res_layers,
-            disc_output_size = disc_output_size
-        )
         if perceptual_weight > 0:
             self.perceptual_loss = LPIPS().eval()
         self.perceptual_weight = perceptual_weight
