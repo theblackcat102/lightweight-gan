@@ -1,14 +1,7 @@
-<img src="./images/sample-512.jpg" width="600px"></img>
 
-*512x512 flowers after 12 hours of training, 1 gpu*
+Lightweight VQ-GAN model adopted from lightweight GAN
 
-<img src="./images/sample-256.jpg" width="400px"></img>
-
-*256x256 flowers after 12 hours of training, 1 gpu*
-
-<img src="./images/pizza-512.jpg" width="600px"></img>
-
-*Pizza*
+The goal of this is to generate high fidelity image ( 512x 512) with high compression ratio f=16. One of the optional goal is to generate visible word as this is usually the fail case for many GANs.
 
 ## Notes to training stable VQ-GAN
 
@@ -20,7 +13,7 @@
 
 * Balanced discriminator size, 2: 1 parameters ratio for autoencoder and discriminator seems to work fine. 4: 1 doesn't work
 
-
+* Currently only PatchGAN discriminator work ( adding attention will fail ). It seems strong discriminator is not an option, since both ResNet and Attention based discriminator both fail in all possible settings ( adding spectral, GP, low/high lr )
 
 
 ## 'Lightweight' GAN
