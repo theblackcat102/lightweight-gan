@@ -143,8 +143,6 @@ class RandomApply(nn.Module):
         fn = self.fn if random() < self.prob else self.fn_else
         return fn(x)
 
-ChanNorm = partial(nn.InstanceNorm2d, affine = True)
-
 
 # dataset
 

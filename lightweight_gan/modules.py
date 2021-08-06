@@ -27,7 +27,17 @@ def default(val, d):
 norm_class = nn.BatchNorm2d
 
 
-ChanNorm = partial(nn.InstanceNorm2d, affine = True)
+class ChanNorm(nn.Module):
+    def __init__(self, dim, eps = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
+        self.b = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+    def forward(self, x):
+        std = torch.var(x, dim = 1, unbiased = False, keepdim = True).sqrt()
+        mean = torch.mean(x, dim = 1, keepdim = True)
+        return (x - mean) / (std + self.eps) * self.g + self.b
 
 
 def upsample(scale_factor = 2):
@@ -676,7 +686,7 @@ class PatchGAN(nn.Module):
     """Defines a PatchGAN discriminator as in Pix2Pix
         --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py
     """
-    def __init__(self, input_nc=3, ndf=64, n_layers=3, use_actnorm=False):
+    def __init__(self, input_nc=3, ndf=32, n_layers=3, use_actnorm=False, attn_res_layers=[]):
         """Construct a PatchGAN discriminator
         Parameters:
             input_nc (int)  -- the number of channels in input images
@@ -702,27 +712,37 @@ class PatchGAN(nn.Module):
         for n in range(1, n_layers):  # gradually increase the number of filters
             nf_mult_prev = nf_mult
             nf_mult = min(2 ** n, 8)
+            if ndf * nf_mult_prev in attn_res_layers:
+                attn = PreNorm(ndf * nf_mult_prev, LinearAttention(ndf * nf_mult_prev))
+                sequence.append(attn)
+
             sequence += [
-                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
-                norm_layer(ndf * nf_mult),
-                nn.LeakyReLU(0.2, True)
+                nn.Sequential(
+                    nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
+                    norm_layer(ndf * nf_mult),
+                    nn.LeakyReLU(0.2, True)
+                )
             ]
 
         nf_mult_prev = nf_mult
         nf_mult = min(2 ** n_layers, 8)
         sequence += [
-            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
-            norm_layer(ndf * nf_mult),
-            nn.LeakyReLU(0.2, True)
+            nn.Sequential(
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+                norm_layer(ndf * nf_mult),
+                nn.LeakyReLU(0.2, True)
+            )
         ]
 
         sequence += [
             nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
-        self.main = nn.Sequential(*sequence)
+        self.main = nn.ModuleList(sequence)
 
     def forward(self, input):
         """Standard forward."""
-        return self.main(input)
+        for layer in self.main:
+            input = layer(input)
+        return input
 
 
 if __name__ == "__main__":
@@ -736,12 +756,16 @@ if __name__ == "__main__":
         128/32
 
     '''
-    input_size = 16
-    image_size = 256
+    input_size = 32
+    image_size = 512
 
     # enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
     x = torch.randn((2, 3, image_size, image_size))
-    dis = PatchGAN(n_layers=5)
+    dis = PatchGAN(n_layers=5, attn_res_layers=[])
+    print(sum(p.numel() for p in dis.parameters() if p.requires_grad)/1e6)
+    dis = PatchGAN(n_layers=5, attn_res_layers=[64])
+    print(sum(p.numel() for p in dis.parameters() if p.requires_grad)/1e6)
+
     print(dis(x).shape)
     # latents = enc(x)
     # print('latents', latents.shape)
