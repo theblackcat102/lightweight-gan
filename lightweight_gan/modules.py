@@ -759,7 +759,8 @@ if __name__ == "__main__":
     input_size = 32
     image_size = 512
 
-    # enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
+    enc = Encoder(image_size, downsample=input_size, attn_res_layers=[])
+
     x = torch.randn((2, 3, image_size, image_size))
     dis = PatchGAN(n_layers=5, attn_res_layers=[])
     print(sum(p.numel() for p in dis.parameters() if p.requires_grad)/1e6)
@@ -769,7 +770,6 @@ if __name__ == "__main__":
     print(dis(x).shape)
     # latents = enc(x)
     # print('latents', latents.shape)
-    # gen = Decoder(image_size, latent_dim=768, input_size=input_size, attn_res_layers=[32], freq_chan_attn=False)
     # latents = torch.randn(2, 768, 1, 1)
     # print(gen(latents).shape)
     # # print(sum(p.numel() for p in enc.parameters() if p.requires_grad)/1e6)

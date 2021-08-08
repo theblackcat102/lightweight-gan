@@ -1,5 +1,6 @@
 import torch
-torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark=True
 from torch import nn
 
 from PIL.Image import Image
@@ -11,6 +12,7 @@ import numpy as np
 import random
 import os, math
 import torchvision
+from tqdm import trange
 from torchvision import transforms
 from torch.optim.lr_scheduler import LambdaLR
 import torch.nn.functional as F
@@ -276,6 +278,7 @@ def train():
         num_workers = FLAGS.num_workers, 
         batch_size = FLAGS.batch_size, 
         shuffle = True, drop_last = True, pin_memory = True)
+    print(len(dataloader))
 
     loader = cycle(dataloader)
 
@@ -314,7 +317,8 @@ def train():
         # disable these seems to work for GAN stage
 
         # VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
-        # G_scaler.load_state_dict(state_dict['G_scaler'])
+        if amp:
+            G_scaler.load_state_dict(state_dict['G_scaler'])
         # G_scheduler.load_state_dict(state_dict['G_scheduler'])
 
         # VQGAN.D.load_state_dict(state_dict['D'])
@@ -324,6 +328,7 @@ def train():
         # D_scheduler.load_state_dict(state_dict['D_scheduler'])
 
         start_step = state_dict['step']
+        del state_dict
 
     if FLAGS.num_gpus > 1:
         VQGAN.G = nn.DataParallel(VQGAN.G, device_ids=list(range(FLAGS.num_gpus)))
@@ -345,76 +350,79 @@ def train():
     Tensorboard loggging
     '''
 
-    for step in range(start_step, FLAGS.num_train_steps):
+    with trange(start_step, FLAGS.num_train_steps + 1, desc='Training', ncols=0, dynamic_ncols=True) as pbar:
+        for step in range(start_step, FLAGS.num_train_steps):
 
-        if step > FLAGS.discriminator_iter_start:
-            recon_only = False
+            if step > FLAGS.discriminator_iter_start:
+                recon_only = False
 
-        if not recon_only:
+            if not recon_only:
+                image_batch = next(loader).cuda()
+                image_batch.requires_grad_()
+                D_opt.zero_grad()
+                dis_loss, logs = step_dis(step, VQGAN, image_batch, amp_context, D_scaler )
+                for key, item in logs.items():
+                    writer.add_scalar(key, item, step)
+                D_scaler.step(D_opt)
+                D_scheduler.step()
+                D_scaler.update()
+
             image_batch = next(loader).cuda()
             image_batch.requires_grad_()
-            D_opt.zero_grad()
-            dis_loss, logs = step_dis(step, VQGAN, image_batch, amp_context, D_scaler )
+
+            G_opt.zero_grad()
+
+            if step % FLAGS.update_temp == 0:
+                temp = np.maximum(FLAGS.init_temp * np.exp(-FLAGS.anneal_rate * step), FLAGS.min_temp)
+            gen_loss, logs = step_gen(step, VQGAN, image_batch, amp_context, G_scaler, recon_only=recon_only, temp=temp)
             for key, item in logs.items():
                 writer.add_scalar(key, item, step)
-            D_scaler.step(D_opt)
-            D_scheduler.step()
-            D_scaler.update()
 
-        image_batch = next(loader).cuda()
-        image_batch.requires_grad_()
+            if recon_only:
+                pbar.set_postfix(gloss='%.4f' % gen_loss.item(), 
+                    temp='%.4f' % temp)
+            else:
+                pbar.set_postfix(gloss='%.4f' % gen_loss.item(), 
+                    dloss='%.4f' % dis_loss.item(),
+                    temp='%.4f'  % temp)
 
-        G_opt.zero_grad()
+            G_scaler.step(G_opt)
+            G_scheduler.step()
+            G_scaler.update()
 
-        if step % FLAGS.update_temp == 0:
-            temp = np.maximum(FLAGS.init_temp * np.exp(-FLAGS.anneal_rate * step), FLAGS.min_temp)
-        gen_loss, logs = step_gen(step, VQGAN, image_batch, amp_context, G_scaler, recon_only=recon_only, temp=temp)
-        for key, item in logs.items():
-            writer.add_scalar(key, item, step)
+            if step % 10 == 0 and step > 20000:
+                VQGAN.EMA()
 
-        if recon_only:
-            print(step, gen_loss.item(), temp)
-        else:
-            print(step, gen_loss.item(), dis_loss.item(), temp)
+            if step % FLAGS.sample_every_steps == 0:
+                generated_images = []
+                total = 0
+                num_rows = FLAGS.sample_grid_size
+                with torch.no_grad():
+                    for image_batch in img_samples:
+                        image_batch = image_batch.cuda()
+                        generated_images.append(VQGAN.G(image_batch)[0].cpu().clamp_(0., 1.) )
 
-        G_scaler.step(G_opt)
-        G_scheduler.step()
-        G_scaler.update()
+                        total += len(image_batch[0])
 
-        if step % 10 == 0 and step > 20000:
-            VQGAN.EMA()
+                generated_images = torch.cat(generated_images)
+                images_grid = torchvision.utils.make_grid(generated_images[:int(num_rows**2)], nrow = num_rows)
+                pil_image = transforms.ToPILImage()(images_grid.cpu())
+                pil_image.save('results/{}/{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
 
-        if step % FLAGS.sample_every_steps == 0:
-            generated_images = []
-            total = 0
-            num_rows = FLAGS.sample_grid_size
-            with torch.no_grad():
-                for image_batch in img_samples:
-                    image_batch = image_batch.cuda()
-                    generated_images.append(VQGAN.G(image_batch)[0].cpu().clamp_(0., 1.) )
-
-                    total += len(image_batch[0])
-
-            generated_images = torch.cat(generated_images)
-            images_grid = torchvision.utils.make_grid(generated_images[:int(num_rows**2)], nrow = num_rows)
-            pil_image = transforms.ToPILImage()(images_grid.cpu())
-            pil_image.save('results/{}/{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
-
-        if step % FLAGS.checkpoint_every_steps == 0:
-            checkpoint = {
-                'G': VQGAN.G.state_dict() if FLAGS.num_gpus == 1 else VQGAN.G.module.state_dict(),
-                'D': VQGAN.D.state_dict() if FLAGS.num_gpus == 1 else VQGAN.D.module.state_dict(),
-                'D_opt': VQGAN.D_opt.state_dict(),
-                'G_opt': VQGAN.G_opt.state_dict(),
-                'G_scheduler': G_scheduler.state_dict(),
-                'D_scheduler': D_scheduler.state_dict(),
-                'G_scaler': G_scaler.state_dict(),
-                'D_scaler': D_scaler.state_dict(),
-                'step': step
-            }
-            torch.save(checkpoint, 'results/{}/model-{}.pt'.format( FLAGS.name, step ))
-
-
+            if step % FLAGS.checkpoint_every_steps == 0:
+                checkpoint = {
+                    'G': VQGAN.G.state_dict() if FLAGS.num_gpus == 1 else VQGAN.G.module.state_dict(),
+                    'D': VQGAN.D.state_dict() if FLAGS.num_gpus == 1 else VQGAN.D.module.state_dict(),
+                    'D_opt': VQGAN.D_opt.state_dict(),
+                    'G_opt': VQGAN.G_opt.state_dict(),
+                    'G_scheduler': G_scheduler.state_dict(),
+                    'D_scheduler': D_scheduler.state_dict(),
+                    'G_scaler': G_scaler.state_dict(),
+                    'D_scaler': D_scaler.state_dict(),
+                    'step': step
+                }
+                torch.save(checkpoint, 'results/{}/model-{}.pt'.format( FLAGS.name, step ))
+            pbar.update(1)
 
 def viz_latent():
     import seaborn as sns

@@ -200,13 +200,14 @@ class LightweightVQGAN(nn.Module):
 if __name__ == '__main__':
     input_size = 32
     image_size = 512
-    gen = LightweightVQGAN(512, image_size=image_size, 
+
+    gen = LightweightVQGAN(768, image_size=image_size, 
         downsample_size=input_size, 
         dec_attn_res_layers=[16, 32], 
         freq_chan_attn=True, 
         d_fmap_max=256,
         perceptual_weight=-1)
-    print('VAE',sum(p.numel() for p in gen.parameters() )/1e6)
+    print('VAE',sum(p.numel() for p in gen.G.parameters() )/1e6)
     D = gen.D
     print('D',sum(p.numel() for p in D.parameters() )/1e6)
 
