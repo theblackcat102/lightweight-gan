@@ -494,7 +494,7 @@ class Decoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(block_in,
+        self.out_conv = torch.nn.Conv2d(block_in,
                                         out_ch,
                                         kernel_size=3,
                                         stride=1,
@@ -530,7 +530,7 @@ class Decoder(nn.Module):
 
         h = self.norm_out(h)
         h = nonlinearity(h)
-        h = self.conv_out(h)
+        h = self.out_conv(h)
         return h
 
 

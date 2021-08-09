@@ -1,8 +1,8 @@
 import torch
 from torch import nn
+from lightweight_gan.diffusionmodels import Encoder, Decoder
 from lightweight_gan.modules import PatchGAN, EMA
 from lightweight_gan.quantizer import GumbelQuantize
-from lightweight_gan.diffusionmodels import Encoder, Decoder
 from lightweight_gan.lightweight_gan import Discriminator, \
     set_requires_grad, Adam, AdaBelief, AugWrapper, get_dct_weights, res_arch_init
 from lightweight_gan.lpips import LPIPS
@@ -46,7 +46,7 @@ class VAE(nn.Module):
             ch=32, num_res_blocks=2, in_channels=3, ch_mult=(1,2,4,8, 16),  
             resolution=image_size, z_channels=latent_dim//2, 
             attn_resolutions=enc_attn_res_layers,
-        )        
+        )
 
         freq_w, freq_h = ([0] * 8), list(range(8)) # in paper, it seems 16 frequencies was ideal
         dct_weights = get_dct_weights(downsample_size, latent_dim, [*freq_w, *freq_h], [*freq_h, *freq_w])
@@ -67,7 +67,7 @@ class VAE(nn.Module):
         self.decoder = Decoder(
             out_ch=3,ch=32, num_res_blocks=2, in_channels=3,ch_mult=(1,2,4,8, 16),  
             resolution=image_size, z_channels=latent_dim, attn_resolutions=dec_attn_res_layers,
-        )        
+        )
         res_arch_init(self)
 
     def forward(self, x, temp=None, decode_only=False):
