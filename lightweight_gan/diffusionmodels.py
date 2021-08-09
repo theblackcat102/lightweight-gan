@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
-
+from torch.cuda.amp import autocast
 
 def get_timestep_embedding(timesteps, embedding_dim):
     """
@@ -401,7 +401,7 @@ class Encoder(nn.Module):
                                         stride=1,
                                         padding=1)
 
-
+    @autocast
     def forward(self, x):
         #assert x.shape[2] == x.shape[3] == self.resolution, "{}, {}, {}".format(x.shape[2], x.shape[3], self.resolution)
 
@@ -500,6 +500,7 @@ class Decoder(nn.Module):
                                         stride=1,
                                         padding=1)
 
+    @autocast
     def forward(self, z):
         #assert z.shape[1:] == self.z_shape[1:]
         self.last_z_shape = z.shape

@@ -6,6 +6,7 @@ from lightweight_gan.quantizer import GumbelQuantize
 from lightweight_gan.lightweight_gan import Discriminator, \
     set_requires_grad, Adam, AdaBelief, AugWrapper, get_dct_weights, res_arch_init
 from lightweight_gan.lpips import LPIPS
+from torch.cuda.amp import autocast
 
 def adopt_weight(weight, global_step, threshold=0, value=0.):
     if global_step < threshold:
@@ -70,6 +71,7 @@ class VAE(nn.Module):
         )
         res_arch_init(self)
 
+    @autocast()
     def forward(self, x, temp=None, decode_only=False):
         if decode_only:
             recon_x = self.decoder(x * self.dct_weights)

@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 from torch.nn.utils.spectral_norm import spectral_norm
-
+from torch.cuda.amp import autocast
 def exists(val):
     return val is not None
 
@@ -662,7 +662,7 @@ class ActNorm(nn.Module):
     def reverse(self, output):
         if self.training and self.initialized.item() == 0:
             if not self.allow_reverse_init:
-                raise RuntimeError(
+                raise RuntimeError(F
                     "Initializing ActNorm in reverse direction is "
                     "disabled by default. Use allow_reverse_init=True to enable."
                 )
@@ -738,6 +738,7 @@ class PatchGAN(nn.Module):
             spectral_norm(nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw))]  # output 1 channel prediction map
         self.main = nn.ModuleList(sequence)
 
+    @autocast
     def forward(self, input):
         """Standard forward."""
         for layer in self.main:
