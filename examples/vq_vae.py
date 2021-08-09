@@ -366,8 +366,9 @@ def train():
                 for key, item in logs.items():
                     writer.add_scalar(key, item, step)
                 D_scaler.step(D_opt)
-                D_scheduler.step()
                 D_scaler.update()
+
+                D_scheduler.step()
 
             image_batch = next(loader).cuda()
             image_batch.requires_grad_()
@@ -389,8 +390,8 @@ def train():
                     temp='%.4f'  % temp)
 
             G_scaler.step(G_opt)
-            G_scheduler.step()
             G_scaler.update()
+            G_scheduler.step()
 
             if step % 10 == 0 and step > 20000:
                 VQGAN.EMA()

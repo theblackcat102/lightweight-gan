@@ -244,7 +244,7 @@ class AugWrapper(nn.Module):
         super().__init__()
         self.D = D
 
-    @autocast
+    # @autocast
     def forward(self, images, prob = 0., types = [], detach = False, **kwargs):
         context = torch.no_grad if detach else null_context
 

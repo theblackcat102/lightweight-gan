@@ -71,7 +71,7 @@ class VAE(nn.Module):
         )
         res_arch_init(self)
 
-    @autocast()
+    # @autocast()
     def forward(self, x, temp=None, decode_only=False):
         if decode_only:
             recon_x = self.decoder(x * self.dct_weights)
@@ -158,11 +158,11 @@ class LightweightVQGAN(nn.Module):
         set_requires_grad(self.GE, False)
 
         if optimizer == "adam":
-            self.G_opt = Adam(self.G.parameters(), lr = lr, betas=(0.5, 0.9))
-            self.D_opt = Adam(self.D.parameters(), lr = lr * ttur_mult, betas=(0.5, 0.9))
+            self.G_opt = Adam(self.G.parameters(), lr = lr, betas=(0.5, 0.9), eps=1e-6)
+            self.D_opt = Adam(self.D.parameters(), lr = lr * ttur_mult, betas=(0.5, 0.9), eps=1e-6)
         elif optimizer == "adabelief":
-            self.G_opt = AdaBelief(self.G.parameters(), lr = lr, betas=(0.5, 0.999))
-            self.D_opt = AdaBelief(self.D.parameters(), lr = lr * ttur_mult, betas=(0.5, 0.999))
+            self.G_opt = AdaBelief(self.G.parameters(), lr = lr, betas=(0.5, 0.999), eps=1e-6)
+            self.D_opt = AdaBelief(self.D.parameters(), lr = lr * ttur_mult, betas=(0.5, 0.999), eps=1e-6)
         else:
             assert False, "No valid optimizer is given"
 
