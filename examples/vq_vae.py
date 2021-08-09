@@ -259,7 +259,7 @@ def store_sample(loader, save_filename):
             total += len(image_batch[0])
 
     generated_images_tensor = torch.cat(generated_images)
-    images_grid = torchvision.utils.make_grid(generated_images_tensor.clamp_(0., 1.)[:int(num_rows**2)], nrow = num_rows)
+    images_grid = torchvision.utils.make_grid(generated_images_tensor.float().clamp_(0., 1.)[:int(num_rows**2)], nrow = num_rows)
     pil_image = transforms.ToPILImage()(images_grid.cpu())
     pil_image.save(save_filename)
 
@@ -402,7 +402,7 @@ def train():
                 with torch.no_grad():
                     for image_batch in img_samples:
                         image_batch = image_batch.cuda()
-                        generated_images.append(VQGAN.G(image_batch)[0].cpu().clamp_(0., 1.) )
+                        generated_images.append(VQGAN.G(image_batch)[0].cpu().float().clamp_(0., 1.) )
 
                         total += len(image_batch[0])
 
