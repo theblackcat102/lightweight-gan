@@ -45,7 +45,7 @@ class VAE(nn.Module):
         # )
         self.encoder = Encoder(
             ch=32, num_res_blocks=2, in_channels=3, ch_mult=(1,2,4,8, 16),  
-            resolution=image_size, z_channels=latent_dim//2, 
+            resolution=image_size, z_channels=latent_dim, 
             attn_resolutions=enc_attn_res_layers,
         )
 
