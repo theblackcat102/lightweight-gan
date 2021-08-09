@@ -148,11 +148,13 @@ def step_dis(step, VQGAN, image_batch, amp_context,L_scaler, device='cuda', ):
             else:
                 fake_output = D_aug(generated_images[0])
                 real_output =  D_aug(image_batch)
+
                 divergence = D_loss_fn(real_output, fake_output)
                 disc_loss = divergence
                 logs['D/divergence'] = disc_loss.item()
 
         if FLAGS.apply_gradient_penalty:
+            print('apply grad')
             if FLAGS.dis_type == 'lightweight':
                 outputs = [real_output, real_output_32x32]
             else:

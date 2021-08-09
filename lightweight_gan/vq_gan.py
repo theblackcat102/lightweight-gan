@@ -1,6 +1,8 @@
+import torch
 from torch import nn
-from lightweight_gan.modules import *
+from lightweight_gan.modules import PatchGAN, EMA
 from lightweight_gan.quantizer import GumbelQuantize
+from lightweight_gan.diffusionmodels import Encoder, Decoder
 from lightweight_gan.lightweight_gan import Discriminator, \
     set_requires_grad, Adam, AdaBelief, AugWrapper, get_dct_weights, res_arch_init
 from lightweight_gan.lpips import LPIPS
@@ -30,32 +32,42 @@ class VAE(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.image_size = image_size
+        # self.encoder = Encoder(
+        #     image_size=self.image_size,
+        #     downsample=downsample_size,
+        #     n_hid=latent_dim,
+        #     fmap_max = fmap_max,
+        #     fmap_inverse_coef= fmap_inverse_coef,
+        #     transparent = transparent,
+        #     greyscale = greyscale,
+        #     attn_res_layers = enc_attn_res_layers
+        # )
         self.encoder = Encoder(
-            image_size=self.image_size,
-            downsample=downsample_size,
-            n_hid=latent_dim,
-            fmap_max = fmap_max,
-            fmap_inverse_coef= fmap_inverse_coef,
-            transparent = transparent,
-            greyscale = greyscale,
-            attn_res_layers = enc_attn_res_layers
-        )
+            ch=32, num_res_blocks=2, in_channels=3, ch_mult=(1,2,4,8, 16),  
+            resolution=image_size, z_channels=latent_dim//2, 
+            attn_resolutions=enc_attn_res_layers,
+        )        
+
         freq_w, freq_h = ([0] * 8), list(range(8)) # in paper, it seems 16 frequencies was ideal
         dct_weights = get_dct_weights(downsample_size, latent_dim, [*freq_w, *freq_h], [*freq_h, *freq_w])
         self.register_buffer('dct_weights', dct_weights)
 
         self.quantizer = GumbelQuantize(latent_dim, vocab_size, latent_dim )
+        # self.decoder = Decoder(
+        #     image_size,
+        #     input_size=downsample_size,
+        #     latent_dim=latent_dim,
+        #     fmap_max = fmap_max,
+        #     fmap_inverse_coef= fmap_inverse_coef,
+        #     transparent = transparent,
+        #     greyscale = greyscale,
+        #     attn_res_layers = dec_attn_res_layers,
+        #     freq_chan_attn = freq_chan_attn
+        # )
         self.decoder = Decoder(
-            image_size,
-            input_size=downsample_size,
-            latent_dim=latent_dim,
-            fmap_max = fmap_max,
-            fmap_inverse_coef= fmap_inverse_coef,
-            transparent = transparent,
-            greyscale = greyscale,
-            attn_res_layers = dec_attn_res_layers,
-            freq_chan_attn = freq_chan_attn
-        )
+            out_ch=3,ch=32, num_res_blocks=2, in_channels=3,ch_mult=(1,2,4,8, 16),  
+            resolution=image_size, z_channels=latent_dim, attn_resolutions=dec_attn_res_layers,
+        )        
         res_arch_init(self)
 
     def forward(self, x, temp=None, decode_only=False):
@@ -201,9 +213,10 @@ if __name__ == '__main__':
     input_size = 32
     image_size = 512
 
-    gen = LightweightVQGAN(768, image_size=image_size, 
+    gen = LightweightVQGAN(512, image_size=image_size, 
         downsample_size=input_size, 
-        dec_attn_res_layers=[16, 32], 
+        dec_attn_res_layers=[16],
+        enc_attn_res_layers=[16],
         freq_chan_attn=True, 
         d_fmap_max=256,
         perceptual_weight=-1)

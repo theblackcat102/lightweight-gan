@@ -764,7 +764,7 @@ if __name__ == "__main__":
     x = torch.randn((2, 3, image_size, image_size))
     dis = PatchGAN(n_layers=5, attn_res_layers=[])
     print(sum(p.numel() for p in dis.parameters() if p.requires_grad)/1e6)
-    dis = PatchGAN(n_layers=5, attn_res_layers=[64])
+    dis = PatchGAN(n_layers=5, attn_res_layers=[])
     print(sum(p.numel() for p in dis.parameters() if p.requires_grad)/1e6)
 
     print(dis(x).shape)
