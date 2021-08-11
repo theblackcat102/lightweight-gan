@@ -318,16 +318,19 @@ def train():
         VQGAN.G.load_state_dict(state_dict['G'])
         # disable these seems to work for GAN stage
 
-        # VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
+        VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
         if amp:
             G_scaler.load_state_dict(state_dict['G_scaler'])
-        # G_scheduler.load_state_dict(state_dict['G_scheduler'])
+        G_scheduler.load_state_dict(state_dict['G_scheduler'])
 
-        # VQGAN.D.load_state_dict(state_dict['D'])
+        VQGAN.D.load_state_dict(state_dict['D'])
 
-        # VQGAN.D_opt.load_state_dict(state_dict['D_opt'])
+        VQGAN.D_opt.load_state_dict(state_dict['D_opt'])
         # D_scaler.load_state_dict(state_dict['D_scaler'])
-        # D_scheduler.load_state_dict(state_dict['D_scheduler'])
+        D_scheduler.load_state_dict(state_dict['D_scheduler'])
+        if 'GE' not in state_dict:
+            print('reset EMA')
+            VQGAN.reset_parameter_averaging()
 
         start_step = state_dict['step']
         del state_dict
@@ -416,6 +419,7 @@ def train():
                 checkpoint = {
                     'G': VQGAN.G.state_dict() if FLAGS.num_gpus == 1 else VQGAN.G.module.state_dict(),
                     'D': VQGAN.D.state_dict() if FLAGS.num_gpus == 1 else VQGAN.D.module.state_dict(),
+                    'GE': VQGAN.GE.state_dict() if FLAGS.num_gpus == 1 else VQGAN.GE.module.state_dict(),
                     'D_opt': VQGAN.D_opt.state_dict(),
                     'G_opt': VQGAN.G_opt.state_dict(),
                     'G_scheduler': G_scheduler.state_dict(),
@@ -447,19 +451,24 @@ def viz_latent():
         d_fmap_max=FLAGS.d_fmap_max,
         lr=FLAGS.learning_rate,
         discriminator_iter_start=FLAGS.discriminator_iter_start,
-    )
+    ).eval()
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
         VQGAN.G.load_state_dict(state_dict['G'])
-        # VQGAN.D.load_state_dict(state_dict['D'])
+        if 'GE' in state_dict:
+            print('load EMA model')
+            VQGAN.GE.load_state_dict(state_dict['GE'])
+        else:
+            VQGAN.GE.load_state_dict(state_dict['G'])
+
         step = state_dict['step']
     VQGAN.eval()
 
     sub_latent = []
     with torch.no_grad():
         for idx in tqdm(range(FLAGS.vocab_size), dynamic_ncols=True):
-            latent = VQGAN.GE.quantizer.embed( torch.Tensor([idx]).long().cuda() )
-            sub_img = VQGAN.GE.decoder(latent.view(1, FLAGS.latent_dim, 1, 1))
+            latent = VQGAN.G.quantizer.embed( torch.Tensor([idx]).long().cuda() )
+            sub_img = VQGAN.G.decoder(latent.view(1, FLAGS.latent_dim, 1, 1))
             sub_latent.append(sub_img.cpu())
 
 
@@ -490,16 +499,29 @@ def viz_latent():
     
     stats = np.zeros(( (FLAGS.vocab_size//128) * 130) )
     num_img = 0
+    imgs = []
     with torch.no_grad():
         for img_batch in dataloader:
             latents = VQGAN.GE.encoder(img_batch.cuda())
             z_q, diff, ind = VQGAN.GE.quantizer(latents)
+            if len(imgs) * FLAGS.batch_size <= (FLAGS.sample_grid_size)**2:
+                recon_x = VQGAN.GE.decoder(z_q * VQGAN.GE.dct_weights)
+                imgs.append(recon_x.cpu())
+
             for idx in ind.flatten():
                 stats[idx.item()] += 1
     
             num_img +=1 
             if num_img > 64:
                 break
+
+    if len(imgs) > 0:
+        num_rows = FLAGS.sample_grid_size
+        generated_images = torch.cat(imgs)
+        images_grid = torchvision.utils.make_grid(generated_images[:int(num_rows**2)], nrow = num_rows)
+        pil_image = transforms.ToPILImage()(images_grid.cpu())
+        pil_image.save('results/{}/viz_{}_EMA.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
+
 
     stats_cnt = Counter([ freq for freq in stats[:FLAGS.vocab_size]])
     print(step, stats_cnt[0], stats_cnt[0]/FLAGS.vocab_size )
