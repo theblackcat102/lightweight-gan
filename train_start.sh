@@ -1,0 +1,12 @@
+CUDA_VISIBLE_DEVICES=1,2,3 python3 -m examples.vq_vae \
+    --flagfile results/vqgan_stage1/flagfile.txt \
+    --name vqgan_stage2 --disc_output_size=6 \
+    --batch_size 6 --warmup_steps=1000 \
+    --ttur_mult 2.0 --disc_weight 3.0 \
+    --dis_type patch --noapply_gradient_penalty \
+    --data /data/860/instagram_global/,/data/m500/instagram_global/,/data/unsplash_caption/ \
+    --aug_prob=0.25  --num_gpus 3 \
+    --discriminator_iter_start=2000 \
+    --noamp \
+    --checkpoint ./results/vqgan_stage1/model-28000.pt  \
+    --num_train_steps 250000

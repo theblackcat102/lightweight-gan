@@ -1,0 +1,11 @@
+CUDA_VISIBLE_DEVICES=1,2 python3 -m examples.vq_vae \
+    --flagfile results/vqgan_stage1/flagfile.txt \
+    --name vqgan_stage2.1 --disc_output_size=6 \
+    --batch_size 4 --warmup_steps=1000 \
+    --ttur_mult 2.0 --disc_weight 3.0 \
+    --dis_type patch --noapply_gradient_penalty \
+    --data /home/theblackcat102/img_corpus/unsplash_caption/ \
+    --aug_prob=0.25  --num_gpus 2 \
+    --discriminator_iter_start=0 \
+    --amp \
+    --num_train_steps 250000

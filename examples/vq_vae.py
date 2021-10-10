@@ -331,6 +331,8 @@ def train():
         if 'GE' not in state_dict:
             print('reset EMA')
             VQGAN.reset_parameter_averaging()
+        else:
+            VQGAN.GE.load_state_dict(state_dict['GE'])
 
         start_step = state_dict['step']
         del state_dict
@@ -451,7 +453,7 @@ def viz_latent():
         d_fmap_max=FLAGS.d_fmap_max,
         lr=FLAGS.learning_rate,
         discriminator_iter_start=FLAGS.discriminator_iter_start,
-    ).eval()
+    )
     if FLAGS.checkpoint is not None:
         state_dict = torch.load(FLAGS.checkpoint, map_location='cuda')
         VQGAN.G.load_state_dict(state_dict['G'])
@@ -460,9 +462,65 @@ def viz_latent():
             VQGAN.GE.load_state_dict(state_dict['GE'])
         else:
             VQGAN.GE.load_state_dict(state_dict['G'])
+        VQGAN.G_opt.load_state_dict(state_dict['G_opt'])
 
         step = state_dict['step']
-    VQGAN.eval()
+
+
+    if len(FLAGS.data) == 1:
+        dataset = ImageDataset(FLAGS.data[0], FLAGS.image_size, aug_prob=0.0)
+    else:
+        print(FLAGS.data)
+        dataset = ConcatDataset(
+            [ 
+                ImageDataset(dataset_path, FLAGS.image_size, aug_prob=0.0) \
+                for dataset_path in FLAGS.data  ]
+        )
+
+    lr = 0 
+    for param_group in VQGAN.G_opt.param_groups:
+        lr = param_group['lr']
+    print('learning rate: ',lr)
+
+    dataloader = DataLoader(dataset, 
+        num_workers = FLAGS.num_workers, 
+        batch_size = 1, 
+        shuffle = False, drop_last = True, pin_memory = True)
+
+
+    stats = np.zeros(( (FLAGS.vocab_size//128) * 130) )
+    num_img = 0
+    imgs = []
+    # determinstic is okay
+    # VQGAN.GE.encoder.eval()
+    with torch.no_grad():
+        for img_batch in dataloader:
+            latents = VQGAN.GE.encoder(img_batch.cuda())
+            z_q, diff, ind = VQGAN.GE.quantizer(latents, temp=1.0)
+            if num_img <= (FLAGS.sample_grid_size)**2:
+                recon_x = VQGAN.GE.decoder(z_q * VQGAN.GE.dct_weights)
+                # clamp is very important
+                imgs.append(recon_x.cpu().float().clamp_(0., 1.))
+                for idx in ind.flatten():
+                    stats[idx.item()] += 1
+            else:
+                break
+            num_img += img_batch.shape[0]
+
+    if len(imgs) > 0:
+        num_rows = FLAGS.sample_grid_size
+        generated_images = torch.cat(imgs)
+        images_grid = torchvision.utils.make_grid(generated_images[:int(num_rows**2)], nrow = num_rows)
+        pil_image = transforms.ToPILImage()(images_grid.cpu())
+        pil_image.save('results/{}/viz_{}_EMA.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
+
+
+    stats_cnt = Counter([ freq for freq in stats[:FLAGS.vocab_size]])
+    print(step, stats_cnt[0], stats_cnt[0]/FLAGS.vocab_size )
+    stats = stats.reshape(130, -1)
+    ax = sns.heatmap(stats)
+    ax.figure.savefig('results/{}/heatmap_{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
+
 
     sub_latent = []
     with torch.no_grad():
@@ -479,55 +537,6 @@ def viz_latent():
     (width, height) = (pil_image.width // 4, pil_image.height // 4)
     pil_image = pil_image.resize((width, height))
     pil_image.save('results/{}/latents_{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
-
-
-    if len(FLAGS.data) == 1:
-        dataset = ImageDataset(FLAGS.data[0], FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob)
-    else:
-        print(FLAGS.data)
-        dataset = ConcatDataset(
-            [ 
-                ImageDataset(dataset_path, FLAGS.image_size, aug_prob=FLAGS.dataset_aug_prob) \
-                for dataset_path in FLAGS.data  ]
-        )
-
-    dataloader = DataLoader(dataset, 
-        num_workers = FLAGS.num_workers, 
-        batch_size = FLAGS.batch_size, 
-        shuffle = True, drop_last = True, pin_memory = True)
-
-    
-    stats = np.zeros(( (FLAGS.vocab_size//128) * 130) )
-    num_img = 0
-    imgs = []
-    with torch.no_grad():
-        for img_batch in dataloader:
-            latents = VQGAN.GE.encoder(img_batch.cuda())
-            z_q, diff, ind = VQGAN.GE.quantizer(latents)
-            if len(imgs) * FLAGS.batch_size <= (FLAGS.sample_grid_size)**2:
-                recon_x = VQGAN.GE.decoder(z_q * VQGAN.GE.dct_weights)
-                imgs.append(recon_x.cpu())
-
-            for idx in ind.flatten():
-                stats[idx.item()] += 1
-    
-            num_img +=1 
-            if num_img > 64:
-                break
-
-    if len(imgs) > 0:
-        num_rows = FLAGS.sample_grid_size
-        generated_images = torch.cat(imgs)
-        images_grid = torchvision.utils.make_grid(generated_images[:int(num_rows**2)], nrow = num_rows)
-        pil_image = transforms.ToPILImage()(images_grid.cpu())
-        pil_image.save('results/{}/viz_{}_EMA.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
-
-
-    stats_cnt = Counter([ freq for freq in stats[:FLAGS.vocab_size]])
-    print(step, stats_cnt[0], stats_cnt[0]/FLAGS.vocab_size )
-    stats = stats.reshape(130, -1)
-    ax = sns.heatmap(stats)
-    ax.figure.savefig('results/{}/heatmap_{}.jpg'.format(FLAGS.name, step//FLAGS.sample_every_steps))
 
 
 
